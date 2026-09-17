@@ -104,8 +104,8 @@ object McpArgumentSanitizer {
 
     private val sensitiveAssignment =
         Regex(
-            """(?i)(?:password|token|secret|api[_-]?key|credential)""" +
-                """\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
+            """(?i)(?<!\{\{)(?:password|token|secret|api[_-]?key|credential)""" +
+                """\s*[:=]\s*(?!\{\{secret:)(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
         )
     private val bearer = Regex("""(?i)Bearer\s+[^\s"',;}]+""")
 

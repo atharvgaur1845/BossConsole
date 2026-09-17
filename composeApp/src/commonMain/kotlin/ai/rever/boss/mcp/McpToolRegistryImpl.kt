@@ -2,6 +2,14 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.components.bars.horizontal.StatusMessageManager
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
+import ai.rever.boss.mcp.secrets.McpResultFilter
+import ai.rever.boss.mcp.secrets.McpSecretPrePass
+import ai.rever.boss.mcp.secrets.SecretDescriptor
+import ai.rever.boss.mcp.secrets.SecretLookup
+import ai.rever.boss.mcp.secrets.SecretPreparation
+import ai.rever.boss.mcp.secrets.SecretRecord
+import ai.rever.boss.mcp.secrets.SecretReferenceResolver
+import ai.rever.boss.mcp.secrets.withSecrets
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolProvider
@@ -10,6 +18,7 @@ import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.RegisteredMcpTool
 import ai.rever.boss.plugin.logging.LogSanitizer
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.services.supabase.SecretService
 import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -98,6 +107,29 @@ object McpToolRegistryImpl : McpToolRegistry {
     /** How long a kill-switch fault sits in the bottom bar — longer than a routine status message. */
     private const val FAULT_MESSAGE_MS = 10_000L
 
+    /**
+     * How `{{secret:<id>}}` references reach the vault: the same host-owned `SecretService` the
+     * Secret Manager panel and the browser autofill read through, mapped to the resolver's own
+     * record type at this one seam. Only consulted for a call that carries a reference, so a
+     * host with no signed-in session pays nothing until an agent asks for a secret - and then
+     * gets a refusal, since the RPC has no session to run under.
+     */
+    private val hostSecretLookup =
+        SecretLookup { limit, offset ->
+            SecretService.getUserSecrets(limit, offset).map { page ->
+                page.data.map { entry ->
+                    SecretRecord(
+                        id = entry.id,
+                        website = entry.website,
+                        username = entry.username,
+                        password = entry.password,
+                        notes = entry.notes,
+                        tags = entry.tags,
+                    )
+                }
+            }
+        }
+
     val policyEngine =
         McpPolicyEngine(
             policyFile = BossDirectories.resolve("mcp-tool-policy.json"),
@@ -121,6 +153,7 @@ object McpToolRegistryImpl : McpToolRegistry {
             policyEngine = policyEngine,
             approvalBus = approvalBus,
             ledger = ledger,
+            secretLookup = hostSecretLookup,
         )
 
     init {
@@ -303,6 +336,12 @@ internal fun mcpToolPermitted(
 internal const val MAX_MCP_RESULT_CHARS: Int = 150_000
 
 /**
+ * The RBAC permission a `{{secret:<id>}}` reference requires of a non-admin user - the same one
+ * the secret-manager plugin puts on `secret_get` and `secrets_list` (see `docs/RBAC_GUIDE.md`).
+ */
+internal const val SECRET_READ_PERMISSION: String = "secret.read"
+
+/**
  * Cut [text] to at most [cap] characters and append a marker saying so.
  *
  * A free function next to [mcpToolPermitted], for the same reason: the rule is testable
@@ -384,8 +423,26 @@ internal class McpToolRegistryCore(
     val policyEngine: McpPolicyEngine = McpPolicyEngine(),
     val approvalBus: McpApprovalBus = McpApprovalBus(),
     val ledger: McpOperationLedger = McpOperationLedger(),
+    /**
+     * Where `{{secret:<id>}}` references are resolved from. `null` (the test default) means
+     * no vault: a call carrying a reference is refused as unresolved rather than passed
+     * through with its placeholders, so a registry without a vault can never hand a handler
+     * literal `{{secret:...}}` text it might mistake for a value.
+     */
+    secretLookup: SecretLookup? = null,
 ) {
     private val logger = BossLogger.forComponent("McpToolRegistry")
+
+    /**
+     * The `{{secret:<id>}}` pre-pass. The permission check is a lambda over this core's own RBAC
+     * state so the pre-pass mirrors [mcpToolPermitted]'s admin bypass without holding a copy.
+     */
+    private val secretPrePass =
+        McpSecretPrePass(
+            policyEngine = policyEngine,
+            resolver = secretLookup?.let { SecretReferenceResolver(it) },
+            secretsPermitted = { isAdmin || SECRET_READ_PERMISSION in permissions },
+        )
 
     /**
      * Serializes all mutations + recomputes (see [McpToolRegistryImpl] KDoc).
@@ -755,11 +812,17 @@ internal class McpToolRegistryCore(
         // config - rather than being auto-allowed for avoiding the catalog's name patterns.
         val policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
         val startTime = System.nanoTime()
+        // The secret pre-pass runs before the audit boundary below on purpose: nothing in it
+        // executes the tool, and a cancellation while the vault is being read has nothing to
+        // record - the ledger's job is to say what happened to an authorized-or-refused call,
+        // and this call is neither yet. Everything it decides is carried into that boundary.
+        val secrets = secretPrePass.prepare(args, policy)
+        val effectivePolicy = secrets.effectivePolicy(policy)
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
         var executionStarted = false
         try {
-            val authorization = authorizeInvocation(tool, args, policy, revocation)
+            val authorization = authorize(tool, args, effectivePolicy, revocation, secrets)
             disposition = authorization.first
             val denial = authorization.second
             result =
@@ -775,7 +838,7 @@ internal class McpToolRegistryCore(
 
                     else -> {
                         executionStarted = true
-                        executeAuthorized(tool, args)
+                        executeAuthorized(tool, secrets.executionArgs(args), secrets.resultFilter())
                     }
                 }
             return requireNotNull(result)
@@ -792,10 +855,12 @@ internal class McpToolRegistryCore(
                 ledger.record(
                     toolName = toolName,
                     providerId = tool.providerId,
-                    policyApplied = policy,
+                    policyApplied = effectivePolicy,
                     approvalDisposition = disposition,
                     durationMs = (System.nanoTime() - startTime) / 1_000_000L,
                     isError = result?.isError ?: true,
+                    // The ORIGINAL arguments, references intact: a reference is inert text,
+                    // so this record carries what the agent wrote and never what it received.
                     rawArgs = McpArgumentSanitizer.parseArguments(args.raw),
                     errorSnippet =
                         when {
@@ -803,6 +868,7 @@ internal class McpToolRegistryCore(
                             result?.isError == true -> result?.text
                             else -> null
                         },
+                    secretRefs = secrets.references.map { it.ledgerName },
                 )
             }
         }
@@ -949,11 +1015,28 @@ internal class McpToolRegistryCore(
             }
         }
 
+    /**
+     * The secret pre-pass's refusal is final and never reaches the policy path; anything else
+     * is authorized as before, with the descriptors carried into the prompt.
+     */
+    private suspend fun authorize(
+        tool: RegisteredMcpTool,
+        args: McpToolArgs,
+        policy: McpPolicyAction,
+        revocation: Long,
+        secrets: SecretPreparation,
+    ): Pair<McpApprovalDisposition, String?> =
+        when (secrets) {
+            is SecretPreparation.Refused -> secrets.disposition to secrets.message
+            else -> authorizeInvocation(tool, args, policy, revocation, secrets.descriptors)
+        }
+
     private suspend fun authorizeInvocation(
         tool: RegisteredMcpTool,
         args: McpToolArgs,
         policy: McpPolicyAction,
         revocation: Long,
+        secretRefs: List<SecretDescriptor> = emptyList(),
     ): Pair<McpApprovalDisposition, String?> =
         when (policy) {
             McpPolicyAction.DENY -> {
@@ -971,8 +1054,12 @@ internal class McpToolRegistryCore(
                             tool.definition.name,
                             tool.providerId,
                             McpArgumentSanitizer.parseArguments(args.raw),
-                            riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
+                            riskAssessment =
+                                DefaultMcpRiskEvaluator()
+                                    .evaluateRisk(tool.definition.name, args)
+                                    .withSecrets(secretRefs),
                             declaredReadOnly = tool.definition.readOnly,
+                            secretRefs = secretRefs,
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {
@@ -1013,10 +1100,16 @@ internal class McpToolRegistryCore(
             this == McpApprovalDisposition.SESSION_TRUSTED ||
                 this == McpApprovalDisposition.PROVIDER_TRUST_PERSIST_FAILED
 
+    /**
+     * [filter] runs before the cap, and over the failure text too: a result is scrubbed of
+     * resolved secrets (when the call carried any) and only then bounded, so the cut cannot
+     * fall inside a value and leave half of it readable.
+     */
     private suspend fun executeAuthorized(
         tool: RegisteredMcpTool,
         args: McpToolArgs,
-    ): McpToolResult = capResult(tool.definition.name, executeUncapped(tool, args))
+        filter: McpResultFilter = McpResultFilter.NONE,
+    ): McpToolResult = capResult(tool.definition.name, filter.apply(executeUncapped(tool, args)))
 
     /**
      * Bound the text a plugin answers with, whatever it asked to say.
@@ -1175,40 +1268,53 @@ internal class McpToolRegistryCore(
     }
 
     /** Parse a JSON-object arguments string into a typed [McpToolArgs] of scalars. */
-    private fun parseArgs(arguments: String): McpToolArgs {
-        val map: Map<String, Any?> =
-            try {
-                (json.parseToJsonElement(arguments) as? JsonObject)
-                    ?.mapValues { (_, el) -> scalarOf(el) }
-                    ?: emptyMap()
-            } catch (t: Throwable) {
-                logger.debug(
-                    LogCategory.SYSTEM,
-                    "MCP tool arguments are not a JSON object - using empty args",
-                    mapOf("error" to t.toString()),
-                )
-                emptyMap()
-            }
-        return McpToolArgs(map, arguments.ifBlank { "{}" })
-    }
+    private fun parseArgs(arguments: String): McpToolArgs = parseMcpToolArgs(arguments)
+}
 
-    /** Convert a JSON element to a Kotlin scalar; nested objects/arrays become their raw JSON. */
-    private fun scalarOf(el: JsonElement): Any? =
-        when {
-            el is JsonNull -> {
-                null
-            }
+private val argsJson = Json { ignoreUnknownKeys = true }
+private val argsLogger by lazy { BossLogger.forComponent("McpToolRegistry") }
 
-            el is JsonPrimitive -> {
-                if (el.isString) {
-                    el.content
-                } else {
-                    el.booleanOrNull ?: el.longOrNull ?: el.doubleOrNull ?: el.content
-                }
-            }
+/**
+ * The one way a raw argument string becomes the [McpToolArgs] a handler receives.
+ *
+ * File-level rather than a method of the core so the secret pre-pass can rebuild arguments from
+ * a substituted tree through exactly the same rule - the scalar map and the raw JSON a handler
+ * might parse itself are then two views of one tree and cannot disagree.
+ */
+@Suppress("TooGenericExceptionCaught") // Anything a malformed argument string throws means "no scalars", not a crash.
+internal fun parseMcpToolArgs(arguments: String): McpToolArgs {
+    val map: Map<String, Any?> =
+        try {
+            (argsJson.parseToJsonElement(arguments) as? JsonObject)
+                ?.mapValues { (_, el) -> scalarOf(el) }
+                ?: emptyMap()
+        } catch (t: Throwable) {
+            argsLogger.debug(
+                LogCategory.SYSTEM,
+                "MCP tool arguments are not a JSON object - using empty args",
+                mapOf("error" to t.toString()),
+            )
+            emptyMap()
+        }
+    return McpToolArgs(map, arguments.ifBlank { "{}" })
+}
 
-            else -> {
-                el.toString()
+/** Convert a JSON element to a Kotlin scalar; nested objects/arrays become their raw JSON. */
+private fun scalarOf(el: JsonElement): Any? =
+    when {
+        el is JsonNull -> {
+            null
+        }
+
+        el is JsonPrimitive -> {
+            if (el.isString) {
+                el.content
+            } else {
+                el.booleanOrNull ?: el.longOrNull ?: el.doubleOrNull ?: el.content
             }
         }
-}
+
+        else -> {
+            el.toString()
+        }
+    }
