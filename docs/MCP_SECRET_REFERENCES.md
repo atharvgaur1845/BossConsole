@@ -113,9 +113,19 @@ defaults.
 ## Result scrubbing (defense in depth)
 
 The guarantee rests on the argument path, the approval and the ledger. The scrubber exists for
-an honest handler that echoes its input: a file read back after a write, a stack trace that quotes
-an argument, a tool that returns the request it was given. It replaces each resolved value with
-`[secret:<id>.<field>]`.
+an honest handler that echoes its input in the same call: a tool that returns the request it was
+given, a stack trace that quotes an argument, a write that answers with the content it wrote. It
+replaces each value resolved for that call with `[secret:<id>.<field>]` in that call's result and
+failure text.
+
+Its scope is the one call. The host holds a value only for the duration of the invocation that
+carried the reference, so a later call has nothing to scrub against: a `codebase_read` of a file
+that a previous approved `codebase_write` filled from a reference returns the file as it is on
+disk, plaintext included. That is the operator's decision at approval (writing a credential to disk
+puts it where every file read can reach it), and the dialog names the secret so the decision is an
+informed one. Scrubbing every later result against every value delivered in the session would
+cover that case at the price of retaining plaintext in the registry for the session and of giving
+up INV5 (calls without references stay byte-identical); it is listed under future work, not done.
 
 | Transformation of the value | Scrubbed |
 |---|---|
@@ -248,5 +258,8 @@ with its own threat model, not a drop-in: the invariants above are the bar it ha
   without the value on the command line (needs terminal-tab and BossTerm changes; BossConsole#495).
 - Secrets shared with the user by others (`getUserSecretsWithShared`).
 - A per-(tool, secret) grant with scope and expiry, for operators who want fewer prompts.
+- Session-scoped scrubbing: replace every value delivered in the session in every later result,
+  so a read-back of a file written from a reference is covered too. Costs retained plaintext in
+  the registry and the byte-identical property of reference-free calls; needs its own decision.
 - TOTP, if a concrete agent workflow demands it, with the "code visible in output" caveat stated
   up front.
