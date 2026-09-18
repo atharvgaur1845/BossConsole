@@ -61,7 +61,11 @@ class McpLedgerChainTest {
         val entry = storedRecords(file).single()
         val descriptor = McpOperationRecord.serializer().descriptor
         val fields = (0 until descriptor.elementsCount).map { descriptor.getElementName(it) }.toSet()
-        val canonical = Json.parseToJsonElement(entry.canonicalFormForHashing()) as JsonObject
+        // secretRefs is emitted only when present, so a record without references keeps the
+        // pre-feature hash (see `empty secret references preserve the pre-feature canonical
+        // hash`); coverage of the field is asserted on a record that carries one.
+        val withRefs = entry.copy(secretRefs = listOf("id.password"))
+        val canonical = Json.parseToJsonElement(withRefs.canonicalFormForHashing()) as JsonObject
         assertEquals(fields - setOf("hash", "parentHash"), canonical.keys)
     }
 
