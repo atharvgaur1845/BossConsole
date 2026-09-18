@@ -80,5 +80,7 @@ internal fun McpOperationRecord.canonicalFormForHashing(): String =
             buildJsonObject { sanitizedArgs.toSortedMap().forEach { (key, value) -> put(key, value) } },
         )
         put("errorSnippet", errorSnippet)
-        put("secretRefs", JsonArray(secretRefs.map(::JsonPrimitive)))
+        if (secretRefs.isNotEmpty()) {
+            put("secretRefs", JsonArray(secretRefs.map(::JsonPrimitive)))
+        }
     }.toString()
