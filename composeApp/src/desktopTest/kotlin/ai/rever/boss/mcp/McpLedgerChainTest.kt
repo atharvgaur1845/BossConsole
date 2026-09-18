@@ -125,6 +125,25 @@ class McpLedgerChainTest {
     }
 
     @Test
+    fun `empty secret references preserve the pre-feature canonical hash`() {
+        val record =
+            McpOperationRecord(
+                id = "legacy-hashed",
+                timestamp = 1L,
+                toolName = "tool",
+                providerId = "provider",
+                policyApplied = McpPolicyAction.ALLOW,
+                approvalDisposition = McpApprovalDisposition.AUTO_ALLOWED,
+                durationMs = 1L,
+                isError = false,
+                sanitizedArgs = emptyMap(),
+            )
+
+        assertTrue("secretRefs" !in record.canonicalFormForHashing())
+        assertTrue("secretRefs" in record.copy(secretRefs = listOf("id.password")).canonicalFormForHashing())
+    }
+
+    @Test
     fun `an untouched ledger verifies intact`() {
         val file = createTempLedgerFile()
         val ledger = McpOperationLedger(ledgerFile = file)
