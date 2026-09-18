@@ -433,7 +433,15 @@ private fun truncationMarker(
 // Suppressed rather than hidden behind mutable state: the count is a real signal that this
 // class wants its collaborators grouped into a config object, and that should stay visible
 // to whoever adds the ninth.
-@Suppress("LongParameterList")
+//
+// LargeClass for the same reason, and it is the same signal: the class now holds the kill
+// switch, RBAC, the policy path, YOLO mode, the approval fence, the secret pre-pass hand-off,
+// execution and the ledger write. The secret work keeps its own logic in
+// `ai.rever.boss.mcp.secrets` (McpSecretPrePass, the resolver, the substitution and the
+// scrubber) and adds only the hand-off here, so splitting further is a change to the
+// governance path's shape rather than to this feature - and should be done deliberately, not
+// as a side effect of landing one.
+@Suppress("LongParameterList", "LargeClass")
 internal class McpToolRegistryCore(
     private val disabledFile: File?,
     private val invokeTimeoutMs: Long = 60_000L,
@@ -1102,7 +1110,6 @@ internal class McpToolRegistryCore(
             McpPolicyAction.ASK
         } else {
             policy
-
         }
 
     /**
