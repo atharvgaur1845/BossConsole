@@ -45,6 +45,7 @@ import kotlin.test.assertTrue
  * INV1 non-disclosure · INV2 atomicity · INV3 ordering · INV4 approval binding ·
  * INV5 transparency · INV6 consistency · INV7 bounded work (see the fuzz test for the last).
  */
+@Suppress("LargeClass")
 class SecretReferenceInvariantTest {
     private val id = "6f1d2c3e-4b5a-4c6d-8e7f-90a1b2c3d4e5"
     private val secret = "hunter2!\"quoted\" & spaced/\\slashed"
@@ -343,6 +344,47 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
+    fun `INV2 - malformed JSON with an ordinary backslash and no marker still runs`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val op = with(h) { operator() }
+            val result = h.core.invoke("write", """{"path":"C:\Users\me\notes.txt"}""")
+            op.cancel()
+            assertFalse(result.isError)
+            assertTrue(called)
+        }
+
+    @Test
+    fun `INV2 - an escaped reference in a non-object payload is refused`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val escaped = "\\u007b\\u007bsecret:$id\\u007d\\u007d"
+            val result = h.core.invoke("write", """["$escaped"]""")
+            assertTrue(result.isError)
+            assertFalse(called)
+            assertEquals(
+                McpApprovalDisposition.SECRET_UNRESOLVED,
+                h.ledger.recentOperations.value
+                    .single()
+                    .approvalDisposition,
+            )
+        }
+
+    @Test
     fun `INV2 - an unterminated reference is refused rather than passed through`() =
         runBlocking {
             val h = Harness(CountingVault(listOf(record)))
@@ -525,7 +567,7 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
-    fun `INV3 - approving with Always Allow does not make the next secret-bearing call silent`() =
+    fun `INV3 - secret-bearing approval cannot persist Always Allow`() =
         runBlocking {
             val file = tempPolicyFile()
             val h = Harness(CountingVault(listOf(record)), file)
@@ -544,7 +586,7 @@ class SecretReferenceInvariantTest {
                     }
                 }
             h.core.invoke("codebase_write", """{"a":"{{secret:$id}}"}""")
-            assertEquals(McpPolicyAction.ALLOW, h.policyEngine.config.value.rules["codebase_write"])
+            assertEquals(null, h.policyEngine.config.value.rules["codebase_write"])
             h.core.invoke("codebase_write", """{"a":"{{secret:$id}}"}""")
             op.cancel()
             assertEquals(2, approvals.get())

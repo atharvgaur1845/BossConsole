@@ -1118,8 +1118,13 @@ internal class McpToolRegistryCore(
         escalated: Boolean,
     ): Pair<McpApprovalDisposition, String?> =
         when (secrets) {
-            is SecretPreparation.Refused -> secrets.disposition to secrets.message
-            else -> authorizeInvocation(tool, args, policy, revocation, escalated, secrets.descriptors)
+            is SecretPreparation.Refused -> {
+                secrets.disposition to secrets.message
+            }
+
+            else -> {
+                authorizeInvocation(tool, args, policy, revocation, escalated, secrets.descriptors)
+            }
         }
 
     /**
@@ -1185,7 +1190,15 @@ internal class McpToolRegistryCore(
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {
-                        approvedAuthorization(tool, onceIfEscalated(tool, decision, escalated), revocation)
+                        // Two reasons a broader scope cannot be honoured, one mechanism: the
+                        // destructive-shell gate overrides any saved allow on the next call
+                        // (#1624), and a secret-bearing call is refused a durable rule because
+                        // the prompt was raised for the secret, not for the tool.
+                        approvedAuthorization(
+                            tool,
+                            onceIfEscalated(tool, decision, escalated || secretRefs.isNotEmpty()),
+                            revocation,
+                        )
                     }
 
                     is McpApprovalDecision.Denied -> {
