@@ -29,6 +29,19 @@ class McpArgumentSanitizerSecretReferenceTest {
     }
 
     @Test
+    fun `a malformed reference cannot exempt plaintext from assignment redaction`() {
+        val out = McpArgumentSanitizer.sanitizeMessage("TOKEN={{secret:ghp_realtokenhere}}")
+        assertFalse(out.contains("ghp_realtokenhere"), out)
+    }
+
+    @Test
+    fun `template-shaped sensitive assignments remain redacted`() {
+        val out = McpArgumentSanitizer.sanitizeMessage("{{password: hunter2}} {{TOKEN=hunter3}}")
+        assertFalse(out.contains("hunter2"), out)
+        assertFalse(out.contains("hunter3"), out)
+    }
+
+    @Test
     fun `a sensitive key name still redacts the whole value, reference or not`() {
         // Key-name redaction is unchanged: a key called "token" is redacted regardless of content.
         val out = McpArgumentSanitizer.sanitize(mapOf("token" to "{{secret:$id}}"))

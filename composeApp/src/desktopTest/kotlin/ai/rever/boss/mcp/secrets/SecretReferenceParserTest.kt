@@ -88,10 +88,10 @@ class SecretReferenceParserTest {
     }
 
     @Test
-    fun `an unterminated candidate is not a candidate`() {
-        // No closing braces: the marker is present, nothing parses, and the text is what the
-        // handler would get. Reported as None so the call runs as an ordinary call.
-        assertIs<SecretReferenceScan.None>(scan("{{secret:$id"))
+    fun `an unterminated candidate is malformed`() {
+        assertIs<SecretReferenceScan.Malformed>(scan("{{secret:$id"))
+        assertIs<SecretReferenceScan.Malformed>(scan("{{secret:$id}"))
+        assertIs<SecretReferenceScan.Malformed>(scan("{{secret:{$id}}}"))
     }
 
     @Test

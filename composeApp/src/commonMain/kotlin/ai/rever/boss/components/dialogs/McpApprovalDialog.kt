@@ -236,24 +236,26 @@ fun McpApprovalDialog(
                 // tool the plugin contributes, not just this one, and persisted across restarts),
                 // so it should take a deliberate reach rather than sit next to "Approve Once"
                 // where a fast click could land on it by mistake.
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "Trusts every tool from \"${request.providerId}\", across restarts.",
-                        fontSize = 10.sp,
-                        color = colors.textSecondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    TextButton(
-                        onClick = { onApprove(false, false, true) },
-                        colors = ButtonDefaults.textButtonColors(contentColor = colors.warn),
+                if (request.secretRefs.isEmpty()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Trust This Plugin", fontSize = 11.sp)
+                        Text(
+                            text = "Trusts every tool from \"${request.providerId}\", across restarts.",
+                            fontSize = 10.sp,
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(
+                            onClick = { onApprove(false, false, true) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = colors.warn),
+                        ) {
+                            Text("Trust This Plugin", fontSize = 11.sp)
+                        }
                     }
                 }
 
@@ -303,13 +305,14 @@ fun McpApprovalDialog(
                         Text("Always Deny", fontSize = 11.sp)
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    TextButton(
-                        onClick = { onApprove(false, true, false) },
-                        colors = ButtonDefaults.textButtonColors(contentColor = colors.warn),
-                    ) {
-                        Text("Always Allow", fontSize = 11.sp)
+                    if (request.secretRefs.isEmpty()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(
+                            onClick = { onApprove(false, true, false) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = colors.warn),
+                        ) {
+                            Text("Always Allow", fontSize = 11.sp)
+                        }
                     }
                 }
 
@@ -367,8 +370,7 @@ fun McpApprovalDialog(
 
 /**
  * The secrets a call would deliver, one row each, and the one sentence about scope that keeps
- * this dialog's other buttons honest: "Always Allow" and session trust apply to the tool, and a
- * secret-bearing call asks again regardless (see `McpSecretPolicyAction`).
+ * secret-bearing call asks again regardless of existing tool policy (see `McpSecretPolicyAction`).
  */
 @Composable
 internal fun SecretReferencesSection(secretRefs: List<SecretDescriptor>) {
@@ -405,8 +407,7 @@ internal fun SecretReferencesSection(secretRefs: List<SecretDescriptor>) {
         Text(
             text =
                 "The value goes to the tool, never to the agent. " +
-                    "Secret-bearing calls ask every time: Always Allow and session trust cover the tool, " +
-                    "not the secret.",
+                    "Secret-bearing calls ask every time and cannot create a durable allow rule.",
             fontSize = 11.sp,
             color = colors.textSecondary,
         )
