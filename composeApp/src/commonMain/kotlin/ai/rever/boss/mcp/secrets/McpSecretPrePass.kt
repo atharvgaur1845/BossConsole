@@ -36,7 +36,8 @@ internal class McpSecretPrePass(
      * The secret pre-pass: what a call's `{{secret:...}}` references mean for it, decided in the
      * order `docs/MCP_SECRET_REFERENCES.md` documents and before any prompt.
      *
-     * 1. No marker in the raw text: not secret-bearing, and the call costs one substring scan.
+     * 1. No marker or JSON escape in the raw text: not secret-bearing. Escaped JSON must be
+     *    decoded because a marker can be written as `\u007b\u007bsecret:`.
      * 2. Malformed reference: refused. A handler must never receive placeholder text.
      * 3. Feature off, or no `secret.read`: forbidden, before any vault read.
      * 4. Tool or provider policy DENY: nothing is read; the normal path refuses.
@@ -49,7 +50,7 @@ internal class McpSecretPrePass(
         args: McpToolArgs,
         policy: McpPolicyAction,
     ): SecretPreparation {
-        if (!SecretReferenceParser.mayContain(args.raw)) return SecretPreparation.None
+        if (!SecretReferenceParser.mayContain(args.raw) && '\\' !in args.raw) return SecretPreparation.None
         val arguments =
             McpArgumentSubstitution.parseObject(args.raw)
                 ?: return SecretPreparation.Refused(
@@ -65,7 +66,7 @@ internal class McpSecretPrePass(
                 is SecretReferenceScan.Malformed -> {
                     return SecretPreparation.Refused(
                         McpApprovalDisposition.SECRET_UNRESOLVED,
-                        "Malformed secret reference ${scan.literal}: ${scan.reason}",
+                        "Malformed secret reference ${scan.literal.take(120)}: ${scan.reason}",
                     )
                 }
 

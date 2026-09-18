@@ -153,13 +153,14 @@ object SecretReferenceParser {
      * Malformed wins over found: one bad candidate fails the whole call, because the agent
      * cannot be handed a partially resolved call (INV2).
      */
+    @Suppress("ReturnCount") // Malformed wins immediately; the final return distinguishes none/found.
     fun findIn(strings: Iterable<String>): SecretReferenceScan {
         val found = LinkedHashSet<SecretReference>()
         var any = false
         for (text in strings) {
             if (!mayContain(text)) continue
+            any = true
             for (match in matchesIn(text)) {
-                any = true
                 var malformed: SecretReferenceScan.Malformed? = null
                 val ref =
                     parseBody(match.groupValues[1]) { reason ->
@@ -167,6 +168,14 @@ object SecretReferenceParser {
                     }
                 malformed?.let { return it }
                 if (ref != null) found.add(ref)
+            }
+            val unmatchedText = candidate.replace(text, "")
+            val unmatchedMarker = unmatchedText.indexOf(MARKER)
+            if (unmatchedMarker >= 0) {
+                return SecretReferenceScan.Malformed(
+                    unmatchedText.substring(unmatchedMarker).take(120),
+                    "the reference is not terminated with }}",
+                )
             }
         }
         return if (!any) SecretReferenceScan.None else SecretReferenceScan.Found(found)

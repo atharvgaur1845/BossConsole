@@ -9,6 +9,7 @@ import ai.rever.boss.mcp.McpPolicyEngine
 import ai.rever.boss.mcp.McpSecretPolicyAction
 import ai.rever.boss.mcp.McpToolPolicyConfig
 import ai.rever.boss.mcp.McpToolRegistryCore
+import ai.rever.boss.mcp.SECRET_READ_PERMISSION
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
@@ -322,6 +323,48 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
+    fun `INV2 - a json-escaped reference is resolved rather than passed through`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var received = ""
+            h.register(
+                tool("write") { args ->
+                    received = args.string("a").orEmpty()
+                    McpToolResult("ran")
+                },
+            )
+            val op = with(h) { operator() }
+            val escaped = "\\u007b\\u007bsecret:$id\\u007d\\u007d"
+            val result = h.core.invoke("write", """{"a":"$escaped"}""")
+            op.cancel()
+            assertFalse(result.isError)
+            assertTrue(received.contains(secret), received)
+            assertFalse(received.contains("{{secret:"), received)
+        }
+
+    @Test
+    fun `INV2 - an unterminated reference is refused rather than passed through`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val result = h.core.invoke("write", """{"a":"{{secret:$id}"}""")
+            assertTrue(result.isError)
+            assertFalse(called)
+            assertEquals(
+                McpApprovalDisposition.SECRET_UNRESOLVED,
+                h.ledger.recentOperations.value
+                    .single()
+                    .approvalDisposition,
+            )
+        }
+
+    @Test
     fun `INV2 - a registry with no vault refuses rather than delivering placeholders`() =
         runBlocking {
             val h = Harness(vault = null)
@@ -550,6 +593,29 @@ class SecretReferenceInvariantTest {
                     .first { it.isNotEmpty() }
                     .first()
             h.policyEngine.setToolPolicy("write", McpPolicyAction.DENY)
+            h.approvalBus.approve(req.id)
+            val result = pending.await()
+            assertTrue(result.isError)
+            assertFalse(called)
+        }
+
+    @Test
+    fun `INV4 - losing secret read while the prompt is open withholds the value`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)), admin = false, permissions = setOf(SECRET_READ_PERMISSION))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val pending = async { h.core.invoke("write", """{"a":"{{secret:$id}}"}""") }
+            val req =
+                h.approvalBus.pendingList
+                    .first { it.isNotEmpty() }
+                    .first()
+            h.core.updateAccess(isAdmin = false, permissions = emptySet())
             h.approvalBus.approve(req.id)
             val result = pending.await()
             assertTrue(result.isError)

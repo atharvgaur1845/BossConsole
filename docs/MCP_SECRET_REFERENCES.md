@@ -139,8 +139,8 @@ up INV5 (calls without references stay byte-identical); it is listed under futur
 | values shorter than 8 characters | not scrubbed at all (would match inside ordinary words) |
 
 `resultScrubbingEnabled = false` switches the scrubber off. The invariant tests run with it off
-to prove that every other surface still holds; the only thing that changes is that an echoing
-handler's result then contains the value.
+to prove that every other surface still holds. An echoing handler's result then contains the
+value, and that returned text can also reach the persisted ledger's error snippet.
 
 Scrubbing runs before the result cap, so a cut can never land inside a value and leave half of it
 readable.
@@ -212,8 +212,10 @@ plaintext still is not: the boundary, demonstrated rather than described).
 ## Operating it
 
 - **Finding an id:** `secrets_list` or `secret_search` return `id <tab> website <tab> username`.
-- **Kill-switching `secret_get`:** with references available, an operator can switch
-  `secret_get` off in Toolbox → MCP and agents keep their credential capability.
+- **Kill-switching `secret_get`:** references are a separate host path. Disabling or uninstalling
+  the Secret Manager plugin does not disable them. To remove agent credential delivery entirely,
+  set `secretBearingCalls` to `DENY` (or `secretReferencesEnabled` to `false`) in the policy file
+  and restart.
 - **Configuration:** three fields in `~/.boss/mcp-tool-policy.json`, all optional:
 
   ```json

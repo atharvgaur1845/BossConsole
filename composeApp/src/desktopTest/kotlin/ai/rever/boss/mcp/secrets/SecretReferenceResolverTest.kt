@@ -65,6 +65,16 @@ class SecretReferenceResolverTest {
         }
 
     @Test
+    fun `plaintext-bearing resolver objects redact their string form`() =
+        runBlocking {
+            val plaintext = "never-print-this"
+            val source = record(a, password = plaintext, notes = plaintext)
+            val resolution = SecretReferenceResolver(PagedVault(listOf(source))).resolve(setOf(passwordOf(a)))
+            assertFalse(source.toString().contains(plaintext), source.toString())
+            assertFalse(resolution.toString().contains(plaintext), resolution.toString())
+        }
+
+    @Test
     fun `walks pages until every reference is found and no further`() =
         runBlocking {
             val filler = (1..450).map { record("11111111-1111-4111-8111-%012d".format(it)) }

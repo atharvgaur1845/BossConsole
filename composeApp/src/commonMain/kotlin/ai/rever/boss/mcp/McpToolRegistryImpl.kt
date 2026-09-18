@@ -355,6 +355,11 @@ internal const val MAX_MCP_RESULT_CHARS: Int = 150_000
  */
 internal const val SECRET_READ_PERMISSION: String = "secret.read"
 
+private data class McpAccessSnapshot(
+    val isAdmin: Boolean = false,
+    val permissions: Set<String> = emptySet(),
+)
+
 /**
  * Cut [text] to at most [cap] characters and append a marker saying so.
  *
@@ -489,7 +494,10 @@ internal class McpToolRegistryCore(
         McpSecretPrePass(
             policyEngine = policyEngine,
             resolver = secretLookup?.let { SecretReferenceResolver(it) },
-            secretsPermitted = { isAdmin || SECRET_READ_PERMISSION in permissions },
+            secretsPermitted = {
+                val access = accessSnapshot
+                access.isAdmin || SECRET_READ_PERMISSION in access.permissions
+            },
         )
 
     /**
@@ -574,29 +582,14 @@ internal class McpToolRegistryCore(
     /**
      * Current user's RBAC state, pushed by the host (see [updateAccess]); gates tool exposure.
      *
-     * Already `@Volatile` before the global search existed, which is what makes the new reader
-     * safe: `permittedTools()` is now called from the search's supplier inside an `async` on
-     * `Dispatchers.Default`, so the write needs a happens-before edge to a thread the writer does
-     * not drive. Without it the staleness would fail OPEN - a search dispatched right after
-     * sign-out filtered against the previous session's permissions - which is the wrong direction
-     * for the field deciding whether admin-only tool names are enumerable.
-     *
-     * The two are volatile individually and NOT read as a pair: [updateAccess] writes [isAdmin]
-     * then [permissions] outside any lock a reader takes, so a reader can see the new flag with
-     * the old set. The window is one dispatch wide and only matters for permission-gated (not
-     * admin-gated) tools, which is why it is documented rather than locked.
-     *
-     * **It fails OPEN**, and that is the part to carry forward if this reasoning is ever copied
-     * somewhere else: the exposed set during that window is the outgoing session's, so a tool the
-     * new state would deny can still be listed for one dispatch after a sign-out. Tolerable here
-     * because the registry backs a loopback-only server for the local machine's own agents; not
-     * tolerable in a context where the reader is a remote caller.
+     * One immutable volatile snapshot keeps the admin flag and permission set from different
+     * sessions from being observed together. This matters for secret delivery, where a mixed
+     * snapshot could otherwise turn a short metadata-exposure race into a credential gate that
+     * fails open. The volatile write also supplies the happens-before edge required by background
+     * readers such as global search.
      */
     @Volatile
-    private var isAdmin = false
-
-    @Volatile
-    private var permissions: Set<String> = emptySet()
+    private var accessSnapshot = McpAccessSnapshot()
 
     /** Enabled tools = registered minus user-disabled minus permission-denied. This is what the bridge mirrors. */
     private val _tools = MutableStateFlow<List<RegisteredMcpTool>>(emptyList())
@@ -768,8 +761,7 @@ internal class McpToolRegistryCore(
         isAdmin: Boolean,
         permissions: Set<String>,
     ) = synchronized(mutationLock) {
-        this.isAdmin = isAdmin
-        this.permissions = permissions
+        accessSnapshot = McpAccessSnapshot(isAdmin, permissions)
         applyExposed()
     }
 
@@ -842,7 +834,10 @@ internal class McpToolRegistryCore(
     fun permittedTools(): List<RegisteredMcpTool> = _all.value.filter { permitted(it.definition) }
 
     /** Mirrors host RBAC. The rule itself is [mcpToolPermitted], which is where it is tested. */
-    private fun permitted(def: McpToolDefinition): Boolean = mcpToolPermitted(def, isAdmin, permissions)
+    private fun permitted(def: McpToolDefinition): Boolean {
+        val access = accessSnapshot
+        return mcpToolPermitted(def, access.isAdmin, access.permissions)
+    }
 
     @Suppress("LongMethod") // Keep authorization and execution inside the same cancellation audit boundary.
     suspend fun invoke(
@@ -883,7 +878,7 @@ internal class McpToolRegistryCore(
                         McpToolResult(denial, isError = true)
                     }
 
-                    !confirmApproval(tool, revocation, disposition) || !isAvailable(tool) -> {
+                    !confirmApproval(tool, revocation, disposition, secrets) || !isAvailable(tool) -> {
                         disposition = McpApprovalDisposition.POLICY_DENIED
                         McpToolResult("MCP tool access revoked while awaiting approval", isError = true)
                     }
@@ -937,9 +932,11 @@ internal class McpToolRegistryCore(
         tool: RegisteredMcpTool,
         revocation: Long,
         disposition: McpApprovalDisposition,
+        secrets: SecretPreparation,
     ): Boolean =
         withContext(Dispatchers.IO) {
             isAvailable(tool) &&
+                (secrets !is SecretPreparation.Ready || secretAccessPermitted()) &&
                 policyEngine.confirmInvocation(
                     tool.definition.name,
                     revocation,
@@ -948,6 +945,11 @@ internal class McpToolRegistryCore(
                     declaredReadOnly = tool.definition.readOnly,
                 )
         }
+
+    private fun secretAccessPermitted(): Boolean {
+        val access = accessSnapshot
+        return access.isAdmin || SECRET_READ_PERMISSION in access.permissions
+    }
 
     /** Recheck access before saving a queued ALLOW; resets invalidate older answers under the policy lock. */
     @Suppress("ReturnCount") // Ordered denial, access revocation, persistence and write-failure outcomes.

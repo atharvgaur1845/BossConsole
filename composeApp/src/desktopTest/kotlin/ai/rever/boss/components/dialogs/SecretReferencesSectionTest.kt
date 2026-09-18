@@ -33,7 +33,7 @@ class SecretReferencesSectionTest {
         }
         rule.onNodeWithText("This call receives 1 secret:").assertIsDisplayed()
         rule.onNodeWithText("github.com (deploy-bot) - password").assertIsDisplayed()
-        rule.onNodeWithText("Secret-bearing calls ask every time", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("cannot create a durable allow rule", substring = true).assertIsDisplayed()
     }
 
     @Test

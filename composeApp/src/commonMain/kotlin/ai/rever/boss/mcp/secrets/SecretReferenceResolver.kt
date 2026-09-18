@@ -14,7 +14,10 @@ data class SecretRecord(
     val password: String,
     val notes: String?,
     val tags: List<String> = emptyList(),
-)
+) {
+    /** Never expose the plaintext-bearing fields through incidental logging or diagnostics. */
+    override fun toString(): String = "SecretRecord(id=$id, fields=[website, username, password, notes, tags])"
+}
 
 /**
  * One page of the signed-in user's own secrets. The only thing the resolver asks of the host.
@@ -39,7 +42,10 @@ sealed interface SecretResolution {
     data class Resolved(
         val values: Map<SecretReference, String>,
         val descriptors: List<SecretDescriptor>,
-    ) : SecretResolution
+    ) : SecretResolution {
+        /** Never expose resolved values through incidental logging or diagnostics. */
+        override fun toString(): String = "Resolved(references=${values.keys.map { it.ledgerName }})"
+    }
 
     /** A reference names a secret this path must never deliver (parity with the plugin's own refusal). */
     data class Forbidden(
@@ -155,7 +161,8 @@ class SecretReferenceResolver(
                     SecretField.PASSWORD -> record.password
                     SecretField.USERNAME -> record.username
                     SecretField.NOTES -> record.notes
-                } ?: return SecretResolution.Unresolved("secret ${ref.id} has no ${ref.field.wireName}")
+                }?.takeIf { it.isNotEmpty() }
+                    ?: return SecretResolution.Unresolved("secret ${ref.id} has no ${ref.field.wireName}")
             values[ref] = value
             descriptors.add(SecretDescriptor(ref, record.website, record.username))
         }
@@ -163,7 +170,11 @@ class SecretReferenceResolver(
     }
 
     companion object {
-        /** The tag the secret-manager plugin puts on provider keys (`ProviderCredentialStore.TAG_AI_PROVIDER`). */
+        /**
+         * The tag the secret-manager plugin puts on provider keys
+         * (`ProviderCredentialStore.TAG_AI_PROVIDER`). This is an intentionally duplicated,
+         * fail-open cross-repository contract: change both declarations together.
+         */
         const val AI_PROVIDER_TAG: String = "ai-provider"
 
         const val DEFAULT_PAGE_SIZE: Int = 200
