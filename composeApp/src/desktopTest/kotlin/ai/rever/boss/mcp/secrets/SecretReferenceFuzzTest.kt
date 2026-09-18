@@ -71,7 +71,7 @@ class SecretReferenceFuzzTest {
      * planted text is then never a candidate of its own, so the generator knows exactly what it
      * planted. Braces still appear in VALUES (see [value]), where they are data, not grammar.
      */
-    private val noiseAlphabet = alphabet - setOf("}", "}}")
+    private val noiseAlphabet = alphabet - setOf("}", "}}", "{{secret:")
 
     private fun Random.value(maxLen: Int = 24): String {
         val length = nextInt(0, maxLen)

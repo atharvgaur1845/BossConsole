@@ -940,7 +940,11 @@ internal class McpToolRegistryCore(
         tool: RegisteredMcpTool,
         decision: McpApprovalDecision.Approved,
         revocation: Long,
+        secretBearing: Boolean,
     ): Pair<McpApprovalDisposition, String?> {
+        if (secretBearing && (decision.trustProvider || decision.persistPolicy)) {
+            return McpApprovalDisposition.APPROVED_ONCE to null
+        }
         if (decision.trustProvider) {
             val toolName = tool.definition.name
             // Same pre-check validateApproval does for the per-tool path: a revoke or DENY
@@ -1029,8 +1033,20 @@ internal class McpToolRegistryCore(
         secrets: SecretPreparation,
     ): Pair<McpApprovalDisposition, String?> =
         when (secrets) {
-            is SecretPreparation.Refused -> secrets.disposition to secrets.message
-            else -> authorizeInvocation(tool, args, policy, revocation, secrets.descriptors)
+            is SecretPreparation.Refused -> {
+                secrets.disposition to secrets.message
+            }
+
+            else -> {
+                authorizeInvocation(
+                    tool,
+                    args,
+                    policy,
+                    revocation,
+                    secrets.descriptors,
+                    secrets is SecretPreparation.Ready,
+                )
+            }
         }
 
     private suspend fun authorizeInvocation(
@@ -1039,6 +1055,7 @@ internal class McpToolRegistryCore(
         policy: McpPolicyAction,
         revocation: Long,
         secretRefs: List<SecretDescriptor> = emptyList(),
+        secretBearing: Boolean = false,
     ): Pair<McpApprovalDisposition, String?> =
         when (policy) {
             McpPolicyAction.DENY -> {
@@ -1065,7 +1082,7 @@ internal class McpToolRegistryCore(
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {
-                        approvedAuthorization(tool, decision, revocation)
+                        approvedAuthorization(tool, decision, revocation, secretBearing)
                     }
 
                     is McpApprovalDecision.Denied -> {

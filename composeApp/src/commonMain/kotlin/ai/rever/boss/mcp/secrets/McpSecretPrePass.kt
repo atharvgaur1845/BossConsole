@@ -33,7 +33,7 @@ internal class McpSecretPrePass(
      * The secret pre-pass: what a call's `{{secret:...}}` references mean for it, decided in the
      * order `docs/MCP_SECRET_REFERENCES.md` documents and before any prompt.
      *
-     * 1. No marker or JSON escape in the raw text: not secret-bearing. Escaped JSON must be
+     * 1. No marker or Unicode JSON escape in the raw text: not secret-bearing. Escaped JSON must be
      *    decoded because a marker can be written as `\u007b\u007bsecret:`.
      * 2. Malformed reference: refused. A handler must never receive placeholder text.
      * 3. Feature off, or no `secret.read`: forbidden, before any vault read.
@@ -42,20 +42,33 @@ internal class McpSecretPrePass(
      * 6. Resolve, all or nothing. The values are held for this call only; the operator sees
      *    descriptors, and the handler sees values only after approval.
      */
-    @Suppress("ReturnCount") // Each step is a distinct, final answer; see the KDoc.
+    @Suppress("ReturnCount", "LongMethod", "CyclomaticComplexMethod")
     suspend fun prepare(
         args: McpToolArgs,
         policy: McpPolicyAction,
     ): SecretPreparation {
-        if (!SecretReferenceParser.mayContain(args.raw) && '\\' !in args.raw) return SecretPreparation.None
-        val arguments =
-            McpArgumentSubstitution.parseObject(args.raw)
-                ?: return SecretPreparation.Refused(
-                    McpApprovalDisposition.SECRET_UNRESOLVED,
-                    "Arguments carry a secret reference but are not a JSON object",
-                )
+        val hasLiteralMarker = SecretReferenceParser.mayContain(args.raw)
+        if (!hasLiteralMarker && !args.raw.contains("\\u")) return SecretPreparation.None
+        val element =
+            McpArgumentSubstitution.parseElement(args.raw)
+                ?: return if (hasLiteralMarker) {
+                    SecretPreparation.Refused(
+                        McpApprovalDisposition.SECRET_UNRESOLVED,
+                        "Arguments carry a secret reference but are not valid JSON",
+                    )
+                } else {
+                    SecretPreparation.None
+                }
+        val scan = McpArgumentSubstitution.scan(element)
+        if (element !is JsonObject && scan !is SecretReferenceScan.None) {
+            return SecretPreparation.Refused(
+                McpApprovalDisposition.SECRET_UNRESOLVED,
+                "Arguments carry a secret reference but are not a JSON object",
+            )
+        }
+        val arguments = element as? JsonObject ?: return SecretPreparation.None
         val references =
-            when (val scan = McpArgumentSubstitution.scan(arguments)) {
+            when (scan) {
                 SecretReferenceScan.None -> {
                     return SecretPreparation.None
                 }
@@ -63,7 +76,7 @@ internal class McpSecretPrePass(
                 is SecretReferenceScan.Malformed -> {
                     return SecretPreparation.Refused(
                         McpApprovalDisposition.SECRET_UNRESOLVED,
-                        "Malformed secret reference ${scan.literal.take(120)}: ${scan.reason}",
+                        "Malformed secret reference ${scan.literal}: ${scan.reason}".take(240),
                     )
                 }
 

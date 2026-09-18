@@ -30,14 +30,16 @@ object McpArgumentSubstitution {
      * `arguments`, the CLI validates one before dispatch), so a non-object that still contains
      * the reference marker is treated as malformed by the caller, not silently passed through.
      */
-    fun parseObject(raw: String): JsonObject? =
+    fun parseElement(raw: String): JsonElement? =
         try {
-            json.parseToJsonElement(raw) as? JsonObject
+            json.parseToJsonElement(raw)
         } catch (_: IllegalArgumentException) {
             null
         } catch (_: SerializationException) {
             null
         }
+
+    fun parseObject(raw: String): JsonObject? = parseElement(raw) as? JsonObject
 
     /** Every decoded string value in [element], depth-first, keys excluded. */
     fun stringValues(element: JsonElement): List<String> {
@@ -61,7 +63,7 @@ object McpArgumentSubstitution {
      * Scan the argument object for references. See [SecretReferenceParser.findIn] for the
      * malformed-wins rule.
      */
-    fun scan(arguments: JsonObject): SecretReferenceScan = SecretReferenceParser.findIn(stringValues(arguments))
+    fun scan(arguments: JsonElement): SecretReferenceScan = SecretReferenceParser.findIn(stringValues(arguments))
 
     /**
      * Return [arguments] with every reference replaced by its value from [values].
