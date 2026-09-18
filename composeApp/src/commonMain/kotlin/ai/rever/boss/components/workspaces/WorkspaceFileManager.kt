@@ -133,6 +133,25 @@ object WorkspaceFileManagerCommon {
     fun fileNameForId(workspaceId: String): String = "${sanitize(workspaceId)}.json"
 
     /**
+     * The files in the workspace directory that are records, not Spaces: the Space theme
+     * assignments, the multi-Space session set, and the single-Space session record under both
+     * the name it has always been written by and the id-derived name it would get today. Each is
+     * written by its own owner through its own path; a Space saved under one of these names
+     * replaces that record with a layout, silently (BossConsole#926). A caller-supplied id whose
+     * [fileNameForId] lands here must be refused before anything is written.
+     */
+    fun reservedDocumentFileNames(): Set<String> =
+        setOf(
+            SPACE_THEMES_FILE,
+            LAST_SESSION_SET_FILE,
+            generateFileName(LAST_SESSION_NAME),
+            fileNameForId(LAST_SESSION_ID),
+        )
+
+    /** Whether a Space saved under [workspaceId] would overwrite one of the [reservedDocumentFileNames]. */
+    fun isReservedDocumentId(workspaceId: String): Boolean = fileNameForId(workspaceId) in reservedDocumentFileNames()
+
+    /**
      * Generate a filename from workspace name.
      *
      * **The LEGACY path, and a reader only.** Every file written before [fileNameForId] is named

@@ -4,8 +4,11 @@ import ai.rever.boss.components.events.TerminalEventBus
 import ai.rever.boss.components.events.TerminalOpenEvent
 import ai.rever.boss.components.window_panel.SplitViewState
 import ai.rever.boss.components.window_panel.SplitViewStateRegistry
+import ai.rever.boss.components.workspaces.LAST_SESSION_NAME
+import ai.rever.boss.components.workspaces.LAST_SESSION_SET_FILE
 import ai.rever.boss.components.workspaces.LayoutWorkspace
 import ai.rever.boss.components.workspaces.PredefinedWorkspaces
+import ai.rever.boss.components.workspaces.SPACE_THEMES_FILE
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
 import ai.rever.boss.components.workspaces.extractCurrentWorkspace
@@ -575,6 +578,32 @@ class WorkspaceMcpToolProviderTest {
                 busEvents.none { it == windowId },
                 "no TerminalOpenEvent aimed at $windowId: $busEvents",
             )
+        }
+
+    @Test
+    fun `open_workspace with createIfAbsent cannot overwrite the store's own records`() =
+        runBlocking {
+            val core = createTestCore()
+            // The records live beside the Spaces under fixed names; a Space saved under one of
+            // them replaces the record with a layout (BossConsole#926).
+            val records =
+                mapOf(
+                    "Space_Themes" to SPACE_THEMES_FILE,
+                    "Last_Session_Set" to LAST_SESSION_SET_FILE,
+                    "Last_Session" to WorkspaceFileManagerCommon.generateFileName(LAST_SESSION_NAME),
+                )
+            for ((id, fileName) in records) {
+                val original = "{\"record\":\"$fileName\"}"
+                assertTrue(fileManager.writeDocumentBlocking(fileName, original))
+                val result =
+                    core.invoke(
+                        "open_workspace",
+                        """{"workspaceId":"$id","createIfAbsent":true,"name":"Hijack"}""",
+                    )
+                assertTrue(result.isError, "$id: ${result.text}")
+                assertTrue(result.text.contains("reserves for its own records"), result.text)
+                assertEquals(original, fileManager.loadDocument(fileName), "$fileName must be untouched")
+            }
         }
 
     @Test

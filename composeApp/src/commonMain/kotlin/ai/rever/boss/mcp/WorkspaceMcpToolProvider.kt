@@ -499,6 +499,16 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                         isError = true,
                     )
                 }
+                // The file an id would be saved under must not be one of the directory's own
+                // records (Space_Themes.json, the session set, the session record): a layout
+                // written there replaces the record, and the loss shows only at the next launch.
+                if (WorkspaceFileManagerCommon.isReservedDocumentId(newId)) {
+                    return McpToolResult(
+                        "'$newId' would be saved under a file name the workspace store reserves for " +
+                            "its own records, not for a Space. Pass a different workspaceId.",
+                        isError = true,
+                    )
+                }
                 val wsName = name?.takeIf { it.isNotBlank() } ?: "Workspace $newId"
                 val rootPath = canonicalProjectPath ?: DefaultWorkingDirectory.nominalPath()
                 workspace = createDefaultWorkspace(newId, wsName, rootPath, openTerminal = openTerminal)
