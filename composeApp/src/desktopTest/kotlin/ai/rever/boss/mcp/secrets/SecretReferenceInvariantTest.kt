@@ -556,7 +556,7 @@ class SecretReferenceInvariantTest {
     fun `INV3 - session trust for the tool never covers a secret-bearing call`() =
         runBlocking {
             val h = Harness(CountingVault(listOf(record)))
-            h.policyEngine.trustForSession("docker_build")
+            h.policyEngine.trustForSession("docker_build", "p1")
             h.register(tool("docker_build") { McpToolResult("ran") })
             assertEquals("ran", h.core.invoke("docker_build", """{"a":"plain"}""").text)
             assertTrue(h.seenRequests.isEmpty())
