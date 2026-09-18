@@ -498,13 +498,7 @@ object WorkspaceMcpToolProvider : McpToolProvider {
             // Check saved workspaces
             if (workspace == null) {
                 val fileManager = getFileManager()
-                val fileName =
-                    if (workspaceId.endsWith(".json")) {
-                        workspaceId
-                    } else {
-                        WorkspaceFileManagerCommon.fileNameForId(workspaceId)
-                    }
-                workspace = fileManager.loadWorkspace(fileName)?.withStableId()
+                workspace = fileManager.loadWorkspace(workspaceFileNameFor(workspaceId))?.withStableId()
             }
         }
 
@@ -1004,13 +998,7 @@ object WorkspaceMcpToolProvider : McpToolProvider {
         // substring): a user's saved Space whose name merely mentions "disposable" is not ours.
         var fileDeleted = false
         if (workspaceId.startsWith(DISPOSABLE_ID_PREFIX)) {
-            val fileName =
-                if (workspaceId.endsWith(".json")) {
-                    workspaceId
-                } else {
-                    WorkspaceFileManagerCommon.fileNameForId(workspaceId)
-                }
-            fileDeleted = getFileManager().deleteWorkspace(fileName)
+            fileDeleted = getFileManager().deleteWorkspace(workspaceFileNameFor(workspaceId))
         }
 
         // Saying "success" when neither happened leaves the agent unable to tell "closed"
@@ -1064,6 +1052,17 @@ object WorkspaceMcpToolProvider : McpToolProvider {
             "'$reserved', which BOSS keeps for its own records (Space themes, the session " +
             "records). Pass a different workspaceId."
     }
+
+    /**
+     * The file a caller-supplied workspace id lives in. An id is a name, never a path: the
+     * `.json` suffix an agent may echo back from a listing is accepted, but the name is then
+     * derived through [WorkspaceFileManagerCommon.fileNameForId] exactly as it was when the file
+     * was written, so a separator or `..` in the id cannot select a file outside the workspace
+     * directory. The file manager refuses such a name anyway; this keeps the tool from producing
+     * one.
+     */
+    internal fun workspaceFileNameFor(workspaceId: String): String =
+        WorkspaceFileManagerCommon.fileNameForId(workspaceId.removeSuffix(".json"))
 
     private fun createDefaultWorkspace(
         id: String,
