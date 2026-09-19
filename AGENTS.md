@@ -2389,6 +2389,26 @@ later change is most likely to want to undo are recorded here so they are undone
   secret-manager plugin puts on `secret_get`; the AI-provider tag refusal mirrors that plugin's
   `aiProviderRefusal`. Neither can be reached through a reference that could not be reached
   through the plugin.
+A saved Space's terminal tabs can carry an `initialCommand` each, typed into a shell the
+moment the Space is applied, and `open_workspace(workspaceId = x)` names the file and shows
+none of them. Approving that call is not approving what `x.json` says to run, so the provider
+used to refuse such Spaces outright. It now implements `McpStoredCommandSource` (host-internal,
+not plugin API): before the prompt the registry asks it what the call would run, shows the
+commands in the approval dialog, escalates the risk to the worst of them, and asks even where
+the tool or provider is ALLOW-ed or session-trusted; durable answers to that prompt are taken
+as one approval, since the prompt was raised for the commands and not the tool. After approval
+the registry hands the same list back to the handler under `approvedStartupCommands`, which it
+strips from every incoming call first, so the handler treats the key as the registry's word
+and nobody else's; a Space whose commands changed between the prompt and the open is refused.
+A source that throws refuses the call, and more than `MAX_STORED_COMMANDS_PER_CALL` commands
+are refused before any prompt, as is any command over `MAX_STORED_COMMAND_CHARS` or a source that
+does not answer within `STORED_COMMANDS_PREVIEW_TIMEOUT_MS`. The prompt is presented as #1624's
+escalated prompt (no durable allow; a durable deny stays available), YOLO mode does not answer it,
+and each command is shown through `displayableStoredCommand` so controls, newlines and bidi or
+zero-width characters are visible rather than acted on. **Path mode is out of scope here and is
+not covered by this prompt**: `matchExistingSpace` can re-enter a saved Space for a project path,
+and that route has its own gate (#920), not this one. Shipped templates are exempt, as before:
+their commands are BOSS's own.
 
 ## Process log authority and lifetime
 

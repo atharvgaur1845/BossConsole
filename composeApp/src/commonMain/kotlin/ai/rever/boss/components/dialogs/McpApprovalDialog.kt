@@ -1,8 +1,13 @@
+@file:Suppress("TooManyFunctions") // The approval dialog and its sections; each is one visual block of it.
+
 package ai.rever.boss.components.dialogs
 
 import ai.rever.boss.mcp.McpApprovalRequest
 import ai.rever.boss.mcp.McpMutatingToolCatalog
+import ai.rever.boss.mcp.displayableStoredCommand
 import ai.rever.boss.mcp.secrets.SecretDescriptor
+import ai.rever.boss.plugin.scrollbar.getPanelScrollbarConfig
+import ai.rever.boss.plugin.scrollbar.scrollbar
 import ai.rever.boss.plugin.ui.BossDialog
 import ai.rever.boss.plugin.ui.BossTheme
 import androidx.compose.foundation.BorderStroke
@@ -10,6 +15,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +30,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -193,7 +200,7 @@ private const val DEFAULT_DENY_REASON = "Operator declined this action"
  * menu.
  */
 @Composable
-@Suppress("LongMethod") // Declarative Compose layout.
+@Suppress("LongMethod", "CyclomaticComplexMethod") // Declarative layout: one branch per optional section.
 fun McpApprovalDialog(
     request: McpApprovalRequest,
     pendingQueueSize: Int = 1,
@@ -280,6 +287,12 @@ fun McpApprovalDialog(
                         if (request.secretRefs.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(10.dp))
                             SecretReferencesSection(request.secretRefs)
+                        }
+
+                        // Commands the arguments do not show, above the risk line because approving
+                        // this call is approving them (see McpStoredCommandSource).
+                        if (request.storedCommands.isNotEmpty()) {
+                            StoredCommandsSection(request.storedCommands)
                         }
 
                         val riskLines =
@@ -654,3 +667,72 @@ internal fun SecretReferencesSection(secretRefs: List<SecretDescriptor>) {
         )
     }
 }
+
+/**
+ * Shell commands this call would run that its arguments do not show: a saved Space's terminal
+ * startup commands, read from the Space file the arguments only name. Listed in full, one per
+ * line, because approving the call is approving these; the arguments box shows an id, and an id
+ * is not a command.
+ */
+@Composable
+private fun StoredCommandsSection(commands: List<String>) {
+    val colors = BossTheme.colors
+    val scroll = rememberScrollState()
+    Spacer(modifier = Modifier.height(10.dp))
+    Text(
+        text =
+            "This Space will run ${commands.size} stored startup command(s) in its terminals, " +
+                "not shown in the arguments:",
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
+        color = colors.alert,
+    )
+    Spacer(modifier = Modifier.height(4.dp))
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = STORED_COMMANDS_BOX_HEIGHT)
+                .background(colors.raised, RoundedCornerShape(4.dp))
+                // Pinned visible when the list overflows the box, so text past the fold is never
+                // hidden without a sign. Gated on layout arithmetic, not on the scroll state, which
+                // reads as scrollable on every first frame (see ToolLauncherDialog).
+                .scrollbar(
+                    scrollState = scroll,
+                    direction = Orientation.Vertical,
+                    config =
+                        getPanelScrollbarConfig().copy(
+                            alpha = STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf { storedCommandsOverflow(commands) },
+                        ),
+                ).verticalScroll(scroll)
+                .padding(8.dp),
+    ) {
+        // Numbered, and each shown through displayableStoredCommand, so one command is one entry
+        // whose visible text is all of its text: no newline can split it into two, and no bidi
+        // or zero-width character can reorder or hide part of it.
+        commands.forEachIndexed { index, command ->
+            Text(
+                text = "${index + 1}. $ ${displayableStoredCommand(command)}",
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = colors.textPrimary,
+            )
+        }
+    }
+}
+
+private val STORED_COMMANDS_BOX_HEIGHT = 120.dp
+private const val STORED_COMMANDS_SCROLLBAR_ALPHA = 0.7f
+
+/** Lines of 12sp monospace that fit the box, and characters per line at the dialog's width. */
+private const val STORED_COMMANDS_VISIBLE_LINES = 6
+private const val STORED_COMMANDS_CHARS_PER_LINE = 60
+
+/**
+ * Whether the commands, as displayed, need more lines than the box shows. Arithmetic over the
+ * text rather than a scroll-state read, so it is right on the first frame; it errs toward
+ * showing the bar, which only costs a thumb on a list that just fits.
+ */
+internal fun storedCommandsOverflow(commands: List<String>): Boolean =
+    commands.sumOf { (displayableStoredCommand(it).length + 8) / STORED_COMMANDS_CHARS_PER_LINE + 1 } >
+        STORED_COMMANDS_VISIBLE_LINES
