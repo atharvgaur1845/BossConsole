@@ -2168,10 +2168,16 @@ later change is most likely to want to undo are recorded here so they are undone
   is no ALLOW on purpose: a flagship governance primitive must not ship with its own bypass. An
   operator who wants fewer prompts is asking for a per-(tool, secret) grant with its own review
   and revocation surface, which is a separate design.
-- **The vault is read once, before the prompt.** The operator must see which secret (website,
-  username, field) the tool would receive, and that metadata comes from the same RPC as the
-  value. A second read after approval would be theatre. The value is delivered only after
-  `confirmApproval`'s revocation fence passes.
+- **The vault is read once per reference, before the prompt.** The operator must see which
+  secret (website, username, field) the tool would receive, and that metadata comes from the
+  same RPC as the value. A second read after approval would be theatre. The value is delivered
+  only after two fences pass: `secret.read` is re-asserted (a loss records `SECRET_FORBIDDEN`,
+  its own disposition, before `confirmInvocation` can grant session trust on the voided
+  approval), then the tool's revocation fence. The read is `get_user_secret_by_id`, which
+  decrypts the referenced row and nothing else under the listing's own visibility rule; the
+  resolver must not go back to walking `get_user_secrets`, which decrypted every row up to the
+  hit and let an unknown id walk the whole vault on the agent's say-so. A call carries at most
+  `McpSecretPrePass.MAX_REFERENCES_PER_CALL` (16) distinct references, refused before any read.
 - **All or nothing.** One malformed or unresolvable reference refuses the whole call before any
   prompt. A handler must never receive placeholder text it might mistake for a value; that is
   also why `secretReferencesEnabled = false` refuses rather than passes through.

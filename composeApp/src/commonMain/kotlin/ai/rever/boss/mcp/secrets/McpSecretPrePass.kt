@@ -29,6 +29,20 @@ internal class McpSecretPrePass(
     private val resolver: SecretReferenceResolver?,
     private val secretsPermitted: () -> Boolean,
 ) {
+    companion object {
+        /**
+         * The most references one call may carry, counted after de-duplication (the same
+         * reference written twice is one), and enforced before any vault read.
+         *
+         * Each reference is one vault read and one line in the approval dialog. A `.env` for a
+         * service with a database, a cache, two APIs and a signing key is five; a call that
+         * arrives with dozens is either a mistake or an attempt to have an operator wave through
+         * a dump, and either way the dialog's "This call receives N secrets" line has stopped
+         * meaning anything. Sixteen leaves the real shape room and refuses the other one.
+         */
+        const val MAX_REFERENCES_PER_CALL: Int = 16
+    }
+
     /**
      * The secret pre-pass: what a call's `{{secret:...}}` references mean for it, decided in the
      * order `docs/MCP_SECRET_REFERENCES.md` documents and before any prompt.
@@ -39,8 +53,9 @@ internal class McpSecretPrePass(
      * 3. Feature off, or no `secret.read`: forbidden, before any vault read.
      * 4. Tool or provider policy DENY: nothing is read; the normal path refuses.
      * 5. `secretBearingCalls = DENY`: forbidden, before any vault read.
-     * 6. Resolve, all or nothing. The values are held for this call only; the operator sees
-     *    descriptors, and the handler sees values only after approval.
+     * 6. More than [MAX_REFERENCES_PER_CALL] references: unresolved, before any vault read.
+     * 7. Resolve, all or nothing, one vault read per reference. The values are held for this
+     *    call only; the operator sees descriptors, and the handler sees values only after approval.
      */
     @Suppress("ReturnCount", "LongMethod", "CyclomaticComplexMethod")
     suspend fun prepare(
@@ -107,10 +122,18 @@ internal class McpSecretPrePass(
                 references,
             )
         }
+        if (references.size > MAX_REFERENCES_PER_CALL) {
+            return SecretPreparation.Refused(
+                McpApprovalDisposition.SECRET_UNRESOLVED,
+                "A call may carry at most $MAX_REFERENCES_PER_CALL secret references; this one carries " +
+                    "${references.size}. Split it, or reference fewer secrets.",
+                references,
+            )
+        }
         return resolve(references, arguments, scrub = config.resultScrubbingEnabled)
     }
 
-    /** Step 6 of [prepare]: the vault read, all or nothing, off the caller's dispatcher. */
+    /** Step 7 of [prepare]: the vault read, all or nothing, off the caller's dispatcher. */
     private suspend fun resolve(
         references: Set<SecretReference>,
         arguments: JsonObject,

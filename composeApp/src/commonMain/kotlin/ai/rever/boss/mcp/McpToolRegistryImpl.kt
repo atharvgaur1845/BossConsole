@@ -110,21 +110,22 @@ object McpToolRegistryImpl : McpToolRegistry {
     /**
      * How `{{secret:<id>}}` references reach the vault: the same host-owned `SecretService` the
      * Secret Manager panel and the browser autofill read through, mapped to the resolver's own
-     * record type at this one seam. Only consulted for a call that carries a reference, so a
-     * host with no signed-in session pays nothing until an agent asks for a secret - and then
-     * gets a refusal, since the RPC has no session to run under.
+     * record type at this one seam. One RPC per reference (`get_user_secret_by_id`), so the
+     * referenced row is the only one decrypted. Only consulted for a call that carries a
+     * reference, so a host with no signed-in session pays nothing until an agent asks for a
+     * secret - and then gets a refusal, since the RPC has no session to run under.
      */
     private val hostSecretLookup =
-        SecretLookup { limit, offset ->
-            SecretService.getUserSecrets(limit, offset).map { page ->
-                page.data.map { entry ->
+        SecretLookup { id ->
+            SecretService.getUserSecretById(id).map { entry ->
+                entry?.let {
                     SecretRecord(
-                        id = entry.id,
-                        website = entry.website,
-                        username = entry.username,
-                        password = entry.password,
-                        notes = entry.notes,
-                        tags = entry.tags,
+                        id = it.id,
+                        website = it.website,
+                        username = it.username,
+                        password = it.password,
+                        notes = it.notes,
+                        tags = it.tags,
                     )
                 }
             }
@@ -340,6 +341,15 @@ internal const val MAX_MCP_RESULT_CHARS: Int = 150_000
  * the secret-manager plugin puts on `secret_get` and `secrets_list` (see `docs/RBAC_GUIDE.md`).
  */
 internal const val SECRET_READ_PERMISSION: String = "secret.read"
+
+/**
+ * The refusal for a secret-bearing call whose operator approved it after the user lost
+ * `secret.read` (signed out, or had the permission removed) while the prompt was open. Its own
+ * text and its own disposition (`SECRET_FORBIDDEN`), so the ledger tells it apart from a tool
+ * revoked or denied in the same window.
+ */
+internal const val SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL: String =
+    "Secret access ($SECRET_READ_PERMISSION) was lost while awaiting approval; the call was not run"
 
 private data class McpAccessSnapshot(
     val isAdmin: Boolean = false,
@@ -826,7 +836,15 @@ internal class McpToolRegistryCore(
                         McpToolResult(denial, isError = true)
                     }
 
-                    !confirmApproval(tool, revocation, disposition, secrets) || !isAvailable(tool) -> {
+                    // Before the tool's own fence, so losing secret.read mid-prompt is recorded as
+                    // what it is, and so confirmInvocation never grants session trust on the
+                    // strength of an approval the secret side has already voided.
+                    secrets is SecretPreparation.Ready && !secretAccessPermitted() -> {
+                        disposition = McpApprovalDisposition.SECRET_FORBIDDEN
+                        McpToolResult(SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL, isError = true)
+                    }
+
+                    !confirmApproval(tool, revocation, disposition) || !isAvailable(tool) -> {
                         disposition = McpApprovalDisposition.POLICY_DENIED
                         McpToolResult("MCP tool access revoked while awaiting approval", isError = true)
                     }
@@ -876,11 +894,9 @@ internal class McpToolRegistryCore(
         tool: RegisteredMcpTool,
         revocation: Long,
         disposition: McpApprovalDisposition,
-        secrets: SecretPreparation,
     ): Boolean =
         withContext(Dispatchers.IO) {
             isAvailable(tool) &&
-                (secrets !is SecretPreparation.Ready || secretAccessPermitted()) &&
                 policyEngine.confirmInvocation(
                     tool.definition.name,
                     revocation,
