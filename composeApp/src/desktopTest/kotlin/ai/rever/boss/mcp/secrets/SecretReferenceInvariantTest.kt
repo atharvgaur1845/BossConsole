@@ -9,6 +9,7 @@ import ai.rever.boss.mcp.McpPolicyEngine
 import ai.rever.boss.mcp.McpSecretPolicyAction
 import ai.rever.boss.mcp.McpToolPolicyConfig
 import ai.rever.boss.mcp.McpToolRegistryCore
+import ai.rever.boss.mcp.SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
 import ai.rever.boss.mcp.SECRET_READ_PERMISSION
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
@@ -58,12 +59,9 @@ class SecretReferenceInvariantTest {
     ) : SecretLookup {
         val reads = AtomicInteger()
 
-        override suspend fun page(
-            limit: Int,
-            offset: Int,
-        ): Result<List<SecretRecord>> {
+        override suspend fun byId(id: String): Result<SecretRecord?> {
             reads.incrementAndGet()
-            return Result.success(records.drop(offset).take(limit))
+            return Result.success(records.firstOrNull { it.id == id })
         }
     }
 
@@ -280,7 +278,8 @@ class SecretReferenceInvariantTest {
     fun `INV2 - one unresolvable reference withholds the whole call before any prompt`() =
         runBlocking {
             val other = "00000000-0000-4000-8000-000000000001"
-            val h = Harness(CountingVault(listOf(record)))
+            val vault = CountingVault(listOf(record))
+            val h = Harness(vault)
             var called = false
             h.register(
                 tool("write") {
@@ -293,11 +292,66 @@ class SecretReferenceInvariantTest {
             assertTrue(result.text.contains(other), result.text)
             assertFalse(called)
             assertTrue(h.seenRequests.isEmpty())
+            // One read per referenced id, whether or not it exists: an unknown id costs the
+            // vault one lookup, never a walk of everything else it holds.
+            assertEquals(2, vault.reads.get())
             val rec =
                 h.ledger.recentOperations.value
                     .single()
             assertEquals(McpApprovalDisposition.SECRET_UNRESOLVED, rec.approvalDisposition)
             assertEquals(setOf("$id.password", "$other.password"), rec.secretRefs.toSet())
+        }
+
+    @Test
+    fun `INV2 - more references than the cap are refused before any prompt or vault read`() =
+        runBlocking {
+            val vault = CountingVault(listOf(record))
+            val h = Harness(vault)
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val ids = List(McpSecretPrePass.MAX_REFERENCES_PER_CALL + 1) { "00000000-0000-4000-8000-%012d".format(it) }
+            val body = ids.withIndex().joinToString(",") { (i, sid) -> """"k$i":"{{secret:$sid}}"""" }
+            val result = h.core.invoke("write", "{$body}")
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("at most ${McpSecretPrePass.MAX_REFERENCES_PER_CALL}"), result.text)
+            assertFalse(called)
+            assertTrue(h.seenRequests.isEmpty())
+            assertEquals(0, vault.reads.get())
+            val rec =
+                h.ledger.recentOperations.value
+                    .single()
+            assertEquals(McpApprovalDisposition.SECRET_UNRESOLVED, rec.approvalDisposition)
+            assertEquals(ids.size, rec.secretRefs.size)
+        }
+
+    @Test
+    fun `INV2 - the cap counts distinct references, so one secret written many times is one`() =
+        runBlocking {
+            val vault = CountingVault(listOf(record))
+            val h = Harness(vault)
+            var seen: String? = null
+            h.register(
+                tool("write") { args ->
+                    seen = args.raw
+                    McpToolResult("ran")
+                },
+            )
+            val body = (0..McpSecretPrePass.MAX_REFERENCES_PER_CALL).joinToString(",") { """"k$it":"{{secret:$id}}"""" }
+            val op = with(h) { operator() }
+            val result =
+                try {
+                    h.core.invoke("write", "{$body}")
+                } finally {
+                    op.cancel()
+                }
+            assertFalse(result.isError, result.text)
+            assertEquals(1, vault.reads.get())
+            assertFalse(requireNotNull(seen).contains("{{secret:"))
         }
 
     @Test
@@ -756,6 +810,39 @@ class SecretReferenceInvariantTest {
             val result = pending.await()
             assertTrue(result.isError)
             assertFalse(called)
+            // Recorded as what it is, not as a tool revoked in the same window.
+            assertEquals(SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL, result.text)
+            val rec =
+                h.ledger.recentOperations.value
+                    .single()
+            assertEquals(McpApprovalDisposition.SECRET_FORBIDDEN, rec.approvalDisposition)
+            assertEquals(listOf("$id.password"), rec.secretRefs)
+        }
+
+    @Test
+    fun `INV4 - a session-trust approval voided at the fence grants no session trust`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)), admin = false, permissions = setOf(SECRET_READ_PERMISSION))
+            var calls = 0
+            h.register(
+                tool("write") {
+                    calls += 1
+                    McpToolResult("ran")
+                },
+            )
+            val pending = async { h.core.invoke("write", """{"a":"{{secret:$id}}"}""") }
+            val req =
+                h.approvalBus.pendingList
+                    .first { it.isNotEmpty() }
+                    .first()
+            h.core.updateAccess(isAdmin = false, permissions = emptySet())
+            h.approvalBus.approve(req.id, trustForSession = true)
+            assertTrue(pending.await().isError)
+            assertEquals(0, calls)
+            // The voided approval left nothing behind: the secret fence runs before
+            // confirmInvocation, which is where session trust would have been granted.
+            val trusted = h.policyEngine.sessionTrustedTools.value
+            assertTrue(trusted.isEmpty(), "$trusted")
         }
 
     @Test

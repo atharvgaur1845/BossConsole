@@ -68,20 +68,22 @@ agent --> terminal-tab bridge --> McpToolRegistryCore.invoke(name, argsJson)
   [4] no secret.read (non-admin)                       -> SECRET_FORBIDDEN, refused
   [5] tool or provider policy DENY                     -> POLICY_DENIED, refused, no vault read
   [6] secretBearingCalls = DENY                        -> SECRET_FORBIDDEN, refused, no vault read
-  [7] resolve every reference from the vault           unknown id, empty field, vault failure -> SECRET_UNRESOLVED
+  [7] more than 16 distinct references                 -> SECRET_UNRESOLVED, refused, no vault read
+  [8] resolve every reference, one vault read each     unknown id, empty field, vault failure -> SECRET_UNRESOLVED
                                                         AI-provider key -> SECRET_FORBIDDEN
-  [8] prompt the operator                              ALWAYS, whatever the tool's rule or session trust says;
+  [9] prompt the operator                              ALWAYS, whatever the tool's rule or session trust says;
                                                         the dialog lists website (username) - field per secret,
                                                         and risk is raised to at least HIGH
-  [9] confirm (revocation fence)                       a DENY or reset saved meanwhile refuses the call
- [10] substitute                                       one rewrite of the argument tree; scalar map and raw JSON agree
- [11] execute                                          unchanged timeout and failure handling
- [12] scrub                                            defense in depth; before the cap
- [13] cap                                              unchanged
- [14] ledger                                           the ORIGINAL arguments (references intact) + secretRefs
+ [10] confirm (secret fence, then revocation fence)    secret.read lost meanwhile -> SECRET_FORBIDDEN;
+                                                        a DENY or reset saved meanwhile -> POLICY_DENIED
+ [11] substitute                                       one rewrite of the argument tree; scalar map and raw JSON agree
+ [12] execute                                          unchanged timeout and failure handling
+ [13] scrub                                            defense in depth; before the cap
+ [14] cap                                              unchanged
+ [15] ledger                                           the ORIGINAL arguments (references intact) + secretRefs
 ```
 
-Refusals at [2] to [7] happen before any prompt, so the agent gets an immediate, precise error
+Refusals at [2] to [8] happen before any prompt, so the agent gets an immediate, precise error
 and the operator is never asked about a call that could not run.
 
 ### Why the vault is read before the prompt
@@ -91,6 +93,16 @@ comes from the same RPC that returns the value, so one read serves both. The val
 this call only, on the host side, and delivered to the handler only after the operator approves
 and the revocation fence passes. Reading twice (metadata first, value after approval) would be
 theatre: the value has already been in process memory either way.
+
+What that read costs is bounded on both sides. Each reference is one `get_user_secret_by_id`
+RPC, which decrypts the referenced row and no other (its visibility rule is the listing's: the
+user's own secrets and their organisations'), so a reference to an id that does not exist costs
+the vault one lookup and brings nothing else into host memory. And a call may carry at most 16
+distinct references, refused before any read above that, so the number of reads an agent can
+cause with one call, and the number of lines the operator has to read in the dialog, both have a
+ceiling. Before the by-id RPC existed the resolver walked `get_user_secrets` page by page, every
+row decrypted server-side on the way, and an unknown id walked the whole vault before it was
+refused; that is the shape this replaces.
 
 ## Approval semantics
 
@@ -152,8 +164,10 @@ Each record gains `secretRefs`, a list of `<id>.<field>`. The `sanitizedArgs` fi
 the arguments the agent wrote, references intact; the substituted arguments never reach the
 ledger. Old records without the field decode with an empty default. Two new dispositions:
 
-- `SECRET_FORBIDDEN`: the host would not deliver (permission, policy, feature off, AI-provider key).
-- `SECRET_UNRESOLVED`: the host could not deliver (malformed, unknown id, empty field, vault failure).
+- `SECRET_FORBIDDEN`: the host would not deliver (permission, policy, feature off, AI-provider key,
+  or `secret.read` lost while the prompt was open).
+- `SECRET_UNRESOLVED`: the host could not deliver (malformed, more than 16 references, unknown id,
+  empty field, vault failure).
 
 Both count as "withheld" in the MCP activity log, next to `QUEUE_FULL` and
 `POLICY_PERSIST_FAILED`: the tool never ran and no operator answered.
@@ -166,7 +180,7 @@ Both count as "withheld" in the MCP activity log, next to `QUEUE_FULL` and
 | Path | Cost |
 |---|---|
 | Call without references: the marker scan added to every governed call | 174 ns per call, against the 5.8 µs the existing argument parse already costs (1.5 KB of arguments) |
-| Call with references: one vault read | one `get_user_secrets` page per 200 secrets, walked until the ids are found; network-bound |
+| Call with references | one `get_user_secret_by_id` RPC per distinct id, at most 16; network-bound |
 | Scrubbing a result at the host cap (150,000 characters, 3 values, 4 encodings each) | 0.42 ms per result, linear in the input |
 
 The test asserts loose bounds (an order of magnitude above these) so a slow CI runner does not
@@ -235,7 +249,9 @@ plaintext still is not: the boundary, demonstrated rather than described).
 | `Secret references require the secret.read permission` | Non-admin user without `secret.read` | Ask an admin for the role; the same permission gates `secret_get` |
 | `Secret references are disabled on this host` | `secretReferencesEnabled = false` | Operator decision; edit the policy file and restart |
 | `Secret-bearing calls are refused by host policy` | `secretBearingCalls = DENY` | Operator decision |
-| `no secret with id ...` | Unknown or not the signed-in user's own secret | Shared-with-me secrets are not resolvable in v1 |
+| `no secret with id ...` | Unknown, or not visible to the signed-in user (their own and their organisations' secrets are) | Shared-with-me secrets are not resolvable in v1 |
+| `A call may carry at most 16 secret references` | More than 16 distinct references in one call | Split the call, or reference fewer secrets |
+| `Secret access (secret.read) was lost while awaiting approval` | Signed out, or the permission was removed, between the prompt and the approval | Sign in again and retry; the ledger records `SECRET_FORBIDDEN` |
 | `secret ... has no notes` | The field is empty | Use another field or fill it in |
 | `... is an AI provider key ...` | Tagged `ai-provider` | Configure the provider in the host's AI settings; parity with `secret_get` |
 | `the vault could not be read (...)` | Signed out, offline, RPC failure | Sign in; retry |
