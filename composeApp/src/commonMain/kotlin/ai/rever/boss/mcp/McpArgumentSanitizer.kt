@@ -177,8 +177,11 @@ object McpArgumentSanitizer {
                 // base64 in a traditionally encrypted PEM, and they contain '-' - which the body
                 // class excludes. Without this arm the match stops at the headers and the whole
                 // encrypted key body (openssl rsa -aes256, ssh-keygen -m PEM with a passphrase)
-                // survives into the dialog and the ledger.
-                """(?:\s*[A-Za-z-]+:[^\n]*\n)*[A-Za-z0-9+/=\s\\]*""" +
+                // survives into the dialog and the ledger. Header lines tolerate a real newline
+                // or the escaped `\n` they carry when the whole command travels inside a JSON
+                // string: without that the arm starves on the '\' and the encrypted body
+                // survives again (fuzz cell: encrypted pem block / json string value).
+                """(?:(?:\s|\\n)*[A-Za-z-]+:(?:\\(?!n)|[^\n\\])*(?:\n|\\n))*[A-Za-z0-9+/=\s\\]*""" +
                 """(?:-----END [A-Z ]*PRIVATE KEY-----)?""",
         )
 
