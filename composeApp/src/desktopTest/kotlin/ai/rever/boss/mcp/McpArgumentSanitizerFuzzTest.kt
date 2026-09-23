@@ -89,6 +89,12 @@ class McpArgumentSanitizerFuzzTest {
             "aws access key id" to Shape { "aws configure set aws_access_key_id AKIA${awsKeyBody(it)}" },
             "pem block" to
                 Shape { "printf '%s' '-----BEGIN RSA PRIVATE KEY-----\n$it\n-----END RSA PRIVATE KEY-----' > id_rsa" },
+            "encrypted pem block" to
+                Shape {
+                    "openssl rsa -aes256 -out id_rsa # -----BEGIN RSA PRIVATE KEY-----\n" +
+                        "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,3F17A9B4C2D1\n\n$it\n" +
+                        "-----END RSA PRIVATE KEY-----"
+                },
         )
 
     /** How the same text is wrapped by the time it is a tool argument. */
@@ -129,7 +135,11 @@ class McpArgumentSanitizerFuzzTest {
                     val secret = random.secret()
                     val input = context.wrap(shape.render(secret))
                     val output = sanitizedCommand(input)
-                    if (output.contains(secret)) {
+                    // The aws shape renders AKIA + an uppercased, truncated secret, so the raw
+                    // secret is not in the input at all and contains(secret) would be vacuous.
+                    // Probe for the rendered key body instead - that is what must not survive.
+                    val probe = if (shapeName == "aws access key id") "AKIA${awsKeyBody(secret)}" else secret
+                    if (output.contains(probe)) {
                         val shown = input.replace("\n", "\\n")
                         val got = output.replace("\n", "\\n")
                         failures += "$shapeName / $contextName\n    in:  $shown\n    out: $got"

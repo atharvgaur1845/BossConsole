@@ -171,7 +171,16 @@ object McpArgumentSanitizer {
      */
     private val awsAccessKeyId = Regex("""(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])""")
     private val pemPrivateKey =
-        Regex("""-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]*PRIVATE KEY-----)?""")
+        Regex(
+            """-----BEGIN [A-Z ]*PRIVATE KEY-----""" +
+                // RFC 1421 headers (Proc-Type:, DEK-Info:) sit between the BEGIN line and the
+                // base64 in a traditionally encrypted PEM, and they contain '-' - which the body
+                // class excludes. Without this arm the match stops at the headers and the whole
+                // encrypted key body (openssl rsa -aes256, ssh-keygen -m PEM with a passphrase)
+                // survives into the dialog and the ledger.
+                """(?:\s*[A-Za-z-]+:[^\n]*\n)*[A-Za-z0-9+/=\s\\]*""" +
+                """(?:-----END [A-Z ]*PRIVATE KEY-----)?""",
+        )
 
     /**
      * Ordered so each rule sees the text the ones before it produced. The URI userinfo pass runs
