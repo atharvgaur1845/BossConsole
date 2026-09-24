@@ -102,7 +102,9 @@ class SecretReferenceResolver(
             val found = LinkedHashMap<String, SecretRecord>()
             for ((id, read) in reads) {
                 val record = read.await().getOrElse { return@coroutineScope Result.failure(it) } ?: continue
-                found[id] = record
+                // The RPC filters on this id, so a row for any other is a vault fault, and it is
+                // treated as the miss it is rather than delivered under the requested name.
+                if (record.id.equals(id, ignoreCase = true)) found[id] = record
             }
             Result.success(found)
         }

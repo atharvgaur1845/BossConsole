@@ -75,8 +75,10 @@ sealed interface SecretReferenceScan {
     ) : SecretReferenceScan
 
     /**
-     * Something that looks like a reference does not parse. [literal] is the offending text and
-     * is safe to show: it cannot contain a value, only whatever the agent typed.
+     * Something that looks like a reference does not parse. [literal] is the offending text,
+     * exactly as the agent typed it, so it is NOT safe to show as is: an agent that pasted a value
+     * where the id belongs (`{{secret:hunter2}}`) produced a malformed reference whose literal is
+     * that value. Anything that surfaces it goes through `McpArgumentSanitizer.sanitizeMessage`.
      */
     data class Malformed(
         val literal: String,

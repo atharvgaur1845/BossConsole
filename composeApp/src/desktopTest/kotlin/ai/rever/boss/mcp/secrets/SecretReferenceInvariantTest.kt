@@ -11,12 +11,14 @@ import ai.rever.boss.mcp.McpToolPolicyConfig
 import ai.rever.boss.mcp.McpToolRegistryCore
 import ai.rever.boss.mcp.SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
 import ai.rever.boss.mcp.SECRET_READ_PERMISSION
+import ai.rever.boss.mcp.parseMcpToolArgs
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolHandler
 import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
+import ai.rever.boss.utils.logging.BossLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -376,6 +378,31 @@ class SecretReferenceInvariantTest {
                     .approvalDisposition,
             )
         }
+
+    @Test
+    fun `INV1 - a value pasted where the id belongs reaches neither the result nor the ledger`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            h.register(tool("write") { McpToolResult("ran") })
+            val pasted = "hunter2-pasted-value"
+            val result = h.core.invoke("write", """{"a":"{{secret:$pasted}}"}""")
+            assertTrue(result.isError)
+            assertTrue(result.text.startsWith("Malformed secret reference"), result.text)
+            assertFalse(result.text.contains(pasted), result.text)
+            val rec =
+                h.ledger.recentOperations.value
+                    .single()
+            assertFalse(rec.errorSnippet.orEmpty().contains(pasted), rec.errorSnippet)
+        }
+
+    @Test
+    fun `INV1 - unparseable arguments are not copied into the host log`() {
+        val pasted = "hunter2-pasted-value"
+        val logger = BossLogger.forComponent("SecretReferenceInvariantTest")
+        val (_, logs) = captureHostLogs { parseMcpToolArgs("""{"password":"$pasted" oops""", logger) }
+        assertTrue(logs.isNotEmpty(), "the parse failure is still logged")
+        logs.forEach { assertFalse("$it".contains(pasted), "$it") }
+    }
 
     @Test
     fun `INV2 - a json-escaped reference is resolved rather than passed through`() =
@@ -895,7 +922,7 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
-    fun `INV4 - a session-trust approval voided at the fence grants no session trust`() =
+    fun `INV4 - a secret-bearing call answered with session trust grants none, even when voided at the fence`() =
         runBlocking {
             val h = Harness(CountingVault(listOf(record)), admin = false, permissions = setOf(SECRET_READ_PERMISSION))
             var calls = 0
@@ -914,8 +941,10 @@ class SecretReferenceInvariantTest {
             h.approvalBus.approve(req.id, trustForSession = true)
             assertTrue(pending.await().isError)
             assertEquals(0, calls)
-            // The voided approval left nothing behind: the secret fence runs before
-            // confirmInvocation, which is where session trust would have been granted.
+            // Belt and braces, not a pin on the fence order: onceIfEscalated turns every durable
+            // answer to a secret-bearing prompt into a plain approval, so no order of the fences
+            // could grant session trust here. The order is pinned by the SECRET_FORBIDDEN
+            // disposition in `INV4 - losing secret read while the prompt is open withholds the value`.
             val trusted = h.policyEngine.sessionTrustedTools.value
             assertTrue(trusted.isEmpty(), "$trusted")
         }

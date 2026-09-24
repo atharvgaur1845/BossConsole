@@ -1132,6 +1132,9 @@ internal class McpToolRegistryCore(
                 SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
             }
 
+            // This branch and the next are unreachable today: nothing sets either switch at runtime
+            // (the policy engine only persists rule changes, which carry both unchanged). They are
+            // here so a runtime setter, when one is added, is fenced without a second change.
             !config.secretReferencesEnabled -> {
                 "Secret references were disabled while awaiting approval; the call was not run"
             }
@@ -1678,7 +1681,7 @@ internal class McpToolRegistryCore(
             logger.debug(
                 LogCategory.SYSTEM,
                 "MCP tool arguments are not parseable JSON - refusing invocation",
-                mapOf("error" to t.toString()),
+                mcpArgsParseFailure(t),
             )
             "unparseable input"
         }
@@ -1725,12 +1728,22 @@ internal fun parseMcpToolArgs(
                 logger.debug(
                     LogCategory.SYSTEM,
                     "MCP tool arguments are not a JSON object - using empty args",
-                    mapOf("error" to t.toString()),
+                    mcpArgsParseFailure(t),
                 )
                 emptyMap()
             }
         }
     return McpToolArgs(map, arguments.ifBlank { "{}" })
+}
+
+/**
+ * What a failed argument parse logs: the exception's type only. kotlinx's parse exceptions append
+ * the offending document to their message, and the document is agent-authored arguments, which
+ * can hold a pasted credential; the host log is not a surface a tool argument may reach.
+ */
+internal fun mcpArgsParseFailure(t: Throwable): Map<String, String> {
+    val type = t::class.simpleName ?: "Throwable"
+    return mapOf("errorType" to type)
 }
 
 /** Convert a JSON element to a Kotlin scalar; nested objects/arrays become their raw JSON. */

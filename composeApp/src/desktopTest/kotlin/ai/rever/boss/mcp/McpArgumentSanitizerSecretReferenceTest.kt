@@ -47,4 +47,37 @@ class McpArgumentSanitizerSecretReferenceTest {
         val out = McpArgumentSanitizer.sanitize(mapOf("token" to "{{secret:$id}}"))
         assertEquals("[REDACTED]", out["token"])
     }
+
+    @Test
+    fun `plaintext glued after a reference is redacted with it`() {
+        val out = McpArgumentSanitizer.sanitizeMessage("TOKEN={{secret:$id}}hunter2 next")
+        assertFalse(out.contains("hunter2"), out)
+        assertTrue(out.endsWith(" next"), out)
+    }
+
+    @Test
+    fun `plaintext glued before a reference is redacted with it`() {
+        val out = McpArgumentSanitizer.sanitizeMessage("TOKEN=hunter2{{secret:$id}}")
+        assertFalse(out.contains("hunter2"), out)
+    }
+
+    @Test
+    fun `a malformed reference holding a pasted value is redacted`() {
+        val out = McpArgumentSanitizer.sanitizeMessage("Malformed secret reference {{secret:hunter2}}: not an id")
+        assertFalse(out.contains("hunter2"), out)
+    }
+
+    @Test
+    fun `input cannot name a mask to make a reference appear`() {
+        // One real reference, plus a forged mask naming it: only the real one may come back.
+        val out = McpArgumentSanitizer.sanitizeMessage("a \uE0000\uE001 b {{secret:$id}}")
+        assertEquals(1, Regex(Regex.escape("{{secret:$id}}")).findAll(out).count(), out)
+    }
+
+    @Test
+    fun `several references each come back in place`() {
+        val other = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        val text = "A={{secret:$id}} B={{secret:$other.username}} C={{secret:$id.notes}}"
+        assertEquals(text, McpArgumentSanitizer.sanitizeMessage(text))
+    }
 }

@@ -1,6 +1,7 @@
 package ai.rever.boss.mcp.secrets
 
 import ai.rever.boss.mcp.McpApprovalDisposition
+import ai.rever.boss.mcp.McpArgumentSanitizer
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpPolicyEngine
 import ai.rever.boss.mcp.McpSecretPolicyAction
@@ -50,15 +51,16 @@ internal class McpSecretPrePass(
      * The secret pre-pass: what a call's `{{secret:...}}` references mean for it, decided in the
      * order `docs/MCP_SECRET_REFERENCES.md` documents and before any prompt.
      *
-     * 1. No marker or Unicode JSON escape in the raw text: not secret-bearing. Escaped JSON must be
-     *    decoded because a marker can be written as `\u007b\u007bsecret:`.
-     * 2. Malformed reference: refused. A handler must never receive placeholder text.
-     * 3. Feature off, or no `secret.read`: forbidden, before any vault read.
-     * 4. Tool or provider policy DENY: nothing is read; the normal path refuses.
-     * 5. `secretBearingCalls = DENY`: forbidden, before any vault read.
-     * 6. More than [MAX_REFERENCES_PER_CALL] references: unresolved, before any vault read.
-     * 7. Resolve, all or nothing, one vault read per reference. The values are held for this
-     *    call only; the operator sees descriptors, and the handler sees values only after approval.
+     * - [1] No marker or Unicode JSON escape in the raw text: not secret-bearing. Escaped JSON must
+     *   be decoded because a marker can be written as `\u007b\u007bsecret:`.
+     * - [2] Malformed reference: refused. A handler must never receive placeholder text.
+     * - [3] Feature off: forbidden, before any vault read.
+     * - [4] No `secret.read`: forbidden, before any vault read.
+     * - [5] Tool or provider policy DENY: nothing is read; the normal path refuses.
+     * - [6] `secretBearingCalls = DENY`: forbidden, before any vault read.
+     * - [7] More than [MAX_REFERENCES_PER_CALL] references: unresolved, before any vault read.
+     * - [8] Resolve, all or nothing, one vault read per reference. The values are held for this
+     *   call only; the operator sees descriptors, and the handler sees values only after approval.
      *
      * The numbering here is the one `docs/MCP_SECRET_REFERENCES.md` uses under "What happens to a
      * call, in order"; the two are meant to be read together, so a step added in one belongs in
@@ -97,9 +99,13 @@ internal class McpSecretPrePass(
                 }
 
                 is SecretReferenceScan.Malformed -> {
+                    // The literal goes through the argument sanitizer like every other agent text
+                    // that reaches the ledger: `{{secret:hunter2}}` is malformed precisely because
+                    // what sits after the colon is not an id, and it may be a pasted value.
+                    val shown = McpArgumentSanitizer.sanitizeMessage(scan.literal)
                     return SecretPreparation.Refused(
                         McpApprovalDisposition.SECRET_UNRESOLVED,
-                        "Malformed secret reference ${scan.literal}: ${scan.reason}".take(240),
+                        "Malformed secret reference $shown: ${scan.reason}".take(240),
                     )
                 }
 

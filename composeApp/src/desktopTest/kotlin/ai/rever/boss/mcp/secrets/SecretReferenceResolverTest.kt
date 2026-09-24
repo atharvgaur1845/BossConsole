@@ -181,6 +181,19 @@ class SecretReferenceResolverTest {
         }
 
     @Test
+    fun `a row for a different id than the one asked for is a miss, not a delivery`() =
+        runBlocking {
+            val stray = record(b, password = "not-yours")
+            val vault =
+                object : SecretLookup {
+                    override suspend fun byId(id: String): Result<SecretRecord?> = Result.success(stray)
+                }
+            val resolution = SecretReferenceResolver(vault).resolve(setOf(SecretReference(a, SecretField.PASSWORD)))
+            assertIs<SecretResolution.Unresolved>(resolution)
+            Unit
+        }
+
+    @Test
     fun `no references resolves to nothing without touching the vault`() =
         runBlocking {
             val vault = Vault(emptyList())
