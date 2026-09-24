@@ -170,11 +170,39 @@ object McpArgumentSanitizer {
      * `-u` is also `git push -u origin` and `python -u`, and an operator has to be able to read
      * those. A URL after `-u` (`redis-cli -u redis://...`) is not basic auth either: its userinfo
      * was redacted by the pass before this one and its host must stay readable.
+     *
+     * A purely numeric `uid:gid` is not basic auth either: `docker run -u 1000:1000` and
+     * `podman run --user=0:0` are among the commonest invocations there are, and which uid a
+     * container is about to run as is exactly the kind of thing approval exists to show. No
+     * credential is two integers, so the exclusion costs nothing; a numeric password with a
+     * non-numeric user (`-u admin:1234`) still redacts, because only both sides being integers
+     * makes it a uid pair.
      */
+    private const val uidGidValue = """[0-9]+:[0-9]*(?=[\s&,;}"']|$)"""
+
     private val basicAuthFlag =
         Regex(
-            """(?<![A-Za-z0-9_-])(-u|--user)(?:[ \t]+|=)(?!["']?[A-Za-z][A-Za-z0-9+.-]*://)""" +
+            """(?<![A-Za-z0-9_-])(-u|--user)(?:[ \t]+|=)""" +
+                """(?!["']?[A-Za-z][A-Za-z0-9+.-]*://)(?!["']?$uidGidValue)""" +
                 """(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s&,;}"']+:[^\s&,;}"']*)""",
+        )
+
+    /**
+     * The cookie jar given as a flag rather than as a header: `curl -b 'session=x'`,
+     * `curl --cookie "session=x"`. `sensitiveAssignment` closes `Cookie: session=x` because the
+     * word `cookie` sits directly before the separator, and closes nothing here: after `-b` the
+     * name of the cookie is whatever the site chose (`session`, `sid`, `JSESSIONID`), and no list
+     * of names would be right for long.
+     *
+     * So the flag is the signal and the whole value is taken, quotes included, exactly as the
+     * long-flag rule does for `--password`. `-b` also names a file (`curl -b cookies.txt`), which
+     * is redacted too: a jar file's path is a weaker secret than its contents, but telling the
+     * two apart needs a filesystem the sanitizer does not have, and over-masking one argument of
+     * a curl command is the safe direction.
+     */
+    private val cookieFlag =
+        Regex(
+            """(?<![A-Za-z0-9_-])(-b|--cookie|--cookie-jar)(?:[ \t]+|=)(?!-)$VALUE""",
         )
 
     /**
@@ -211,6 +239,7 @@ object McpArgumentSanitizer {
             .replace(pemPrivateKey, "[REDACTED]")
             .replace(awsAccessKeyId, "[REDACTED]")
             .replace(basicAuthFlag, "$1 [REDACTED]")
+            .replace(cookieFlag, "$1 [REDACTED]")
             .replace(credentialShapePattern, "[REDACTED]")
             .replace(sensitiveAssignment, "[REDACTED]")
             .replace(authorizationHeader, "[REDACTED]")
