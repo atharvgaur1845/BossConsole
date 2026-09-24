@@ -1173,8 +1173,9 @@ internal class McpToolRegistryCore(
             }
 
             // YOLO answers the prompt, and only the prompt: DENY above, the kill switch and RBAC
-            // are all decided before this branch is reached.
-            McpPolicyAction.ASK if policyEngine.yoloMode.value -> {
+            // are all decided before this branch is reached. A secret-bearing call still asks:
+            // YOLO answers for the tool, never for the vault.
+            McpPolicyAction.ASK if policyEngine.yoloMode.value && secretRefs.isEmpty() -> {
                 McpApprovalDisposition.YOLO_ALLOWED to null
             }
 

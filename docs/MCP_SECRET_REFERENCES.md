@@ -97,7 +97,8 @@ theatre: the value has already been in process memory either way.
 `Permission(tool)` is not `Permission(tool, secret)`.
 
 - A secret-bearing call always asks. Tool-wide "Always Allow", provider trust ("Trust this
-  plugin") and session trust all apply to the tool and never satisfy a secret-bearing call.
+  plugin"), session trust and YOLO mode all apply to the tool and never satisfy a
+  secret-bearing call.
 - The host policy `secretBearingCalls` is `ASK` (default) or `DENY`. There is no `ALLOW`. The
   primitive contains no configuration that turns it into silent delivery.
 - `secretReferencesEnabled = false` removes the feature: secret-bearing calls are refused, not

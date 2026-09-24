@@ -355,9 +355,13 @@ class SecretReferenceInvariantTest {
                 },
             )
             val op = with(h) { operator() }
-            val result = h.core.invoke("write", """{"path":"C:\Users\me\notes.txt"}""")
+            // A lowercase \u followed by non-hex makes the parse genuinely fail, so these calls
+            // survive on the no-marker fallback rather than on the raw-scan gate.
+            val result = h.core.invoke("write", """{"path":"C:\users\me\notes.txt"}""")
+            val listResult = h.core.invoke("write", """["C:\users\me"]""")
             op.cancel()
             assertFalse(result.isError)
+            assertFalse(listResult.isError)
             assertTrue(called)
         }
 
@@ -445,6 +449,43 @@ class SecretReferenceInvariantTest {
                     .single()
             assertEquals(McpApprovalDisposition.POLICY_DENIED, rec.approvalDisposition)
             assertEquals(listOf("$id.password"), rec.secretRefs)
+        }
+
+    @Test
+    fun `INV3 - YOLO mode does not cover a secret-bearing call`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var received: McpToolArgs? = null
+            h.register(
+                tool("write") { args ->
+                    received = args
+                    McpToolResult("ran")
+                },
+            )
+            h.policyEngine.setYoloMode(true)
+            val op = with(h) { operator() }
+            val result = h.core.invoke("write", """{"path":"{{secret:$id}}"}""")
+            op.cancel()
+            // YOLO could not answer this one: the operator was shown the call and approved it.
+            assertFalse(result.isError, result.text)
+            assertEquals(secret, received?.string("path"))
+            assertEquals(1, h.seenRequests.size)
+            assertEquals(
+                McpApprovalDisposition.APPROVED_ONCE,
+                h.ledger.recentOperations.value
+                    .single()
+                    .approvalDisposition,
+            )
+            // A plain call under YOLO still runs without asking.
+            val plain = h.core.invoke("write", """{"path":"/tmp/x"}""")
+            assertFalse(plain.isError, plain.text)
+            assertEquals(1, h.seenRequests.size)
+            assertEquals(
+                McpApprovalDisposition.YOLO_ALLOWED,
+                h.ledger.recentOperations.value
+                    .last()
+                    .approvalDisposition,
+            )
         }
 
     @Test
