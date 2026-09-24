@@ -2,6 +2,7 @@ package ai.rever.boss.mcp.secrets
 
 import ai.rever.boss.mcp.MAX_MCP_RESULT_CHARS
 import ai.rever.boss.mcp.parseMcpToolArgs
+import ai.rever.boss.utils.logging.BossLogger
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -19,6 +20,7 @@ import kotlin.test.assertTrue
  */
 class SecretReferenceOverheadTest {
     private val id = "6f1d2c3e-4b5a-4c6d-8e7f-90a1b2c3d4e5"
+    private val logger = BossLogger.forComponent("SecretReferenceOverheadTest")
 
     @Test
     fun `a call without references pays one substring scan`() {
@@ -33,14 +35,14 @@ class SecretReferenceOverheadTest {
         // Warm up both paths.
         repeat(2_000) {
             SecretReferenceParser.mayContain(raw)
-            parseMcpToolArgs(raw)
+            parseMcpToolArgs(raw, logger)
         }
         val scanStart = System.nanoTime()
         var hits = 0
         repeat(iterations) { if (SecretReferenceParser.mayContain(raw)) hits++ }
         val scanNs = (System.nanoTime() - scanStart) / iterations
         val parseStart = System.nanoTime()
-        repeat(iterations) { parseMcpToolArgs(raw) }
+        repeat(iterations) { parseMcpToolArgs(raw, logger) }
         val parseNs = (System.nanoTime() - parseStart) / iterations
         println(
             "secret pre-pass, no references: scan=${scanNs}ns/call, " +
