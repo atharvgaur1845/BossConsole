@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 
+private val argsLogger by lazy { BossLogger.forComponent("McpSecretPrePass") }
+
 /**
  * The `{{secret:<id>}}` pre-pass `McpToolRegistryCore.invoke` runs on every call before the
  * policy and approval path. It decides, in a fixed order and before any prompt, whether a call is
@@ -25,8 +27,6 @@ import kotlinx.serialization.json.JsonObject
  * @param secretsPermitted Whether the signed-in user may read secrets at all. Mirrors the gate the
  *   secret-manager plugin puts on `secret_get` (`secret.read`, admin bypass).
  */
-private val argsLogger by lazy { BossLogger.forComponent("McpSecretPrePass") }
-
 internal class McpSecretPrePass(
     private val policyEngine: McpPolicyEngine,
     private val resolver: SecretReferenceResolver?,

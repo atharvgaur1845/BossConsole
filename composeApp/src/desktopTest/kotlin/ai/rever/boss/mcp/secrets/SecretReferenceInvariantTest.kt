@@ -493,6 +493,45 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
+    fun `INV7 - a deeply nested payload still leaves its ledger record`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val deep = """{"a":"\u0041","b":""" + "[".repeat(8_000) + "]".repeat(8_000) + "}"
+            val result = h.core.invoke("write", deep)
+            assertFalse(result.isError, result.text)
+            assertTrue(called)
+            assertEquals(1, h.ledger.recentOperations.value.size)
+        }
+
+    @Test
+    fun `INV7 - a deeply nested payload carrying a reference is refused, not crashed`() =
+        runBlocking {
+            val h = Harness(CountingVault(listOf(record)))
+            var called = false
+            h.register(
+                tool("write") {
+                    called = true
+                    McpToolResult("ran")
+                },
+            )
+            val deep = """{"a":"{{secret:$id}}","b":""" + "[".repeat(8_000) + "]".repeat(8_000) + "}"
+            val result = h.core.invoke("write", deep)
+            assertTrue(result.isError)
+            assertFalse(called)
+            val rec =
+                h.ledger.recentOperations.value
+                    .single()
+            assertEquals(McpApprovalDisposition.SECRET_UNRESOLVED, rec.approvalDisposition)
+        }
+
+    @Test
     fun `INV3 - a user without secret read is refused before the vault is read`() =
         runBlocking {
             val vault = CountingVault(listOf(record))

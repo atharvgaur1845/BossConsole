@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp.secrets
 
+import ai.rever.boss.mcp.mcpJsonNestingExceeds
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -31,12 +32,19 @@ object McpArgumentSubstitution {
      * the reference marker is treated as malformed by the caller, not silently passed through.
      */
     fun parseElement(raw: String): JsonElement? =
-        try {
-            json.parseToJsonElement(raw)
-        } catch (_: IllegalArgumentException) {
+        if (mcpJsonNestingExceeds(raw)) {
+            // The tree reader would overflow on this input; null routes to the caller's
+            // fallback (refuse when a marker is present, run raw otherwise), and the invoke
+            // path still writes its ledger row.
             null
-        } catch (_: SerializationException) {
-            null
+        } else {
+            try {
+                json.parseToJsonElement(raw)
+            } catch (_: IllegalArgumentException) {
+                null
+            } catch (_: SerializationException) {
+                null
+            }
         }
 
     fun parseObject(raw: String): JsonObject? = parseElement(raw) as? JsonObject
