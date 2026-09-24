@@ -359,9 +359,12 @@ class SecretReferenceInvariantTest {
             // survive on the no-marker fallback rather than on the raw-scan gate.
             val result = h.core.invoke("write", """{"path":"C:\users\me\notes.txt"}""")
             val listResult = h.core.invoke("write", """["C:\users\me"]""")
+            // A payload that parses but is not an object runs raw, with no resolution attempted.
+            val arrayResult = h.core.invoke("write", """["\u0041"]""")
             op.cancel()
             assertFalse(result.isError)
             assertFalse(listResult.isError)
+            assertFalse(arrayResult.isError)
             assertTrue(called)
         }
 
@@ -476,14 +479,15 @@ class SecretReferenceInvariantTest {
                     .single()
                     .approvalDisposition,
             )
-            // A plain call under YOLO still runs without asking.
+            // A plain call whose policy is ASK still gets no prompt under YOLO.
+            h.policyEngine.setToolPolicy("write", McpPolicyAction.ASK)
             val plain = h.core.invoke("write", """{"path":"/tmp/x"}""")
             assertFalse(plain.isError, plain.text)
             assertEquals(1, h.seenRequests.size)
             assertEquals(
                 McpApprovalDisposition.YOLO_ALLOWED,
                 h.ledger.recentOperations.value
-                    .last()
+                    .first()
                     .approvalDisposition,
             )
         }

@@ -2202,7 +2202,8 @@ still override provider ALLOW. The Trusted plugins UI lists ALLOW rules only; ha
 provider DENY rules currently require policy-file editing to remove.
 
 **YOLO mode** makes any call whose policy resolves to ASK run without prompting, for every tool
-and provider, CRITICAL-risk ones and tools registered later included. Any user can turn it on,
+and provider, CRITICAL-risk ones and tools registered later included - secret-bearing calls
+excepted: YOLO answers for the tool, never for the vault. Any user can turn it on,
 behind one confirmation (`McpYoloConfirmation`, composed per window in `BossAppDialogs` and
 raised through `McpYoloPrompt`), from either of two places: **MCP access → YOLO mode...** in the
 bottom bar, or the **Tools → MCP YOLO Mode** checkbox in the application menu. The menu item is
@@ -2212,9 +2213,9 @@ checkmark is the indicator and unchecking turns the mode off; in the bar it read
 in the alert colour with "Turn off YOLO mode" first in the menu.
 
 - **It replaces only the prompt.** `policyFor` is untouched, so explicit tool or provider DENY,
-  an unreadable policy file, the kill switch and RBAC still refuse first, and a revoke or DENY
-  landing mid-flight still stops the call at `confirmInvocation`. `McpYoloModeTest` drives the
-  real registry to pin this.
+  an unreadable policy file, the kill switch and RBAC still refuse first, a secret-bearing call
+  keeps its prompt, and a revoke or DENY landing mid-flight still stops the call at
+  `confirmInvocation`. `McpYoloModeTest` drives the real registry to pin this.
 - **In memory only** (`McpPolicyEngine.yoloMode`), off at every launch. Prompts already queued
   when it is turned on still ask.
 - **Audited in the ledger, both the calls and the switch.** Each call it lets through is
@@ -2273,8 +2274,9 @@ later change is most likely to want to undo are recorded here so they are undone
 - **`invoke` is an enforcement boundary for governed traffic, not a security boundary for the
   process.** BossTerm's built-ins and terminal-tab's `run_in_sidebar`/`cli` never reach it (#495);
   a reference typed there is never resolved.
-- **A secret-bearing call always asks.** The secret policy sits above session trust and above a
-  tool or provider ALLOW in the precedence, and `secretBearingCalls` has only ASK and DENY. There
+- **A secret-bearing call always asks.** The secret policy sits above session trust, above a
+  tool or provider ALLOW and above YOLO mode in the precedence, and `secretBearingCalls` has
+  only ASK and DENY. There
   is no ALLOW on purpose: a flagship governance primitive must not ship with its own bypass. An
   operator who wants fewer prompts is asking for a per-(tool, secret) grant with its own review
   and revocation surface, which is a separate design.
