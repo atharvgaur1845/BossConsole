@@ -38,6 +38,7 @@ secret's use visible at the approval site rather than hidden behind an earlier `
 | Exfiltration by an authorized tool | The tool is trusted with the value by the operator's approval. Plugins run in-process and already hold the whole vault through `PluginContext.secretDataProvider` (`DefaultPlugin.kt`); references add no plugin-side exposure. |
 | Values the tool transforms (hash, base64, ciphertext, case change, double encoding) | The scrubber recognises exact forms only. See the table under "Result scrubbing". |
 | BossTerm's built-in shell tools (`run_command`, `send_input`, `read_scrollback`, ...) and terminal-tab's `run_in_sidebar` / `cli` | They are served by BossTerm's own MCP server and never reach the host registry (BossConsole#495). A reference typed into one of them is never resolved and passes through as literal text. |
+| A resolved value that is itself shell syntax, in a host tool whose argument is a shell command (`open_terminal`, `run_command` through the host registry) | Substitution happens after the operator has read the arguments, so a value containing `;`, `\|` or `$(...)` would change what was approved. The host does not claim the operator saw it: it re-runs the risk evaluator on the substituted arguments and REFUSES the call when the level went up, rather than re-prompting (a re-prompt would have to display the value). A value that leaves the level where it was runs as approved, so this bounds the damage rather than removing the class. An organisation's secret is resolvable by any member, so the value need not have been authored by the approver. |
 | Plugin-internal logging | A handler that logs its own arguments logs the value. The host controls its own log, not a plugin's. |
 | TOTP codes and recovery codes | Not addressable by a reference. A six-digit code cannot be scrubbed, and no BOSS workflow consumes one through a tool today. |
 
@@ -74,13 +75,16 @@ agent --> terminal-tab bridge --> McpToolRegistryCore.invoke(name, argsJson)
   [9] prompt the operator                              ALWAYS, whatever the tool's rule or session trust says;
                                                         the dialog lists website (username) - field per secret,
                                                         and risk is raised to at least HIGH
- [10] confirm (secret fence, then revocation fence)    secret.read lost meanwhile -> SECRET_FORBIDDEN;
+ [10] confirm (secret fence, then revocation fence)    secret.read lost, references switched off or
+                                                        secretBearingCalls flipped to DENY meanwhile
+                                                        -> SECRET_FORBIDDEN;
                                                         a DENY or reset saved meanwhile -> POLICY_DENIED
  [11] substitute                                       one rewrite of the argument tree; scalar map and raw JSON agree
- [12] execute                                          unchanged timeout and failure handling
- [13] scrub                                            defense in depth; before the cap
- [14] cap                                              unchanged
- [15] ledger                                           the ORIGINAL arguments (references intact) + secretRefs
+ [12] re-assess the SUBSTITUTED arguments              risk went up -> SECRET_FORBIDDEN, refused, never re-prompted
+ [13] execute                                          unchanged timeout and failure handling
+ [14] scrub                                            defense in depth; before the cap
+ [15] cap                                              unchanged
+ [16] ledger                                           the ORIGINAL arguments (references intact) + secretRefs
 ```
 
 Refusals at [2] to [8] happen before any prompt, so the agent gets an immediate, precise error
@@ -100,7 +104,10 @@ user's own secrets and their organisations'), so a reference to an id that does 
 the vault one lookup and brings nothing else into host memory. And a call may carry at most 16
 distinct references, refused before any read above that, so the number of reads an agent can
 cause with one call, and the number of lines the operator has to read in the dialog, both have a
-ceiling. Before the by-id RPC existed the resolver walked `get_user_secrets` page by page, every
+ceiling **for one call**. It is not a budget across calls: every refusal path above runs before
+the prompt, so an agent that keeps sending calls full of unknown ids keeps causing one lookup per
+id with no operator involved. That is far smaller than the 25 x 200 walk this replaced, and every
+attempt is in the ledger, but the bound this states is per call and nothing more. Before the by-id RPC existed the resolver walked `get_user_secrets` page by page, every
 row decrypted server-side on the way, and an unknown id walked the whole vault before it was
 refused; that is the shape this replaces.
 
@@ -195,6 +202,7 @@ fail; they catch a regression to something quadratic, not a microsecond.
 | Agent / model | untrusted | authors tool names and arguments; reads results | never receives values; sees descriptors and scrubbed results |
 | Plugin handler | partially trusted (already holds the vault) | receives substituted arguments; may log or forward them | unchanged trust; risk shown at approval |
 | External service | untrusted | receives whatever the tool sends | operator's decision; non-goal |
+| Host memory during the prompt | must not outlive the call | a resolved value sits in the `invoke` frame as a `String` while the dialog is open, up to the 45 s timeout | not zeroable on the JVM; the rest of this table says where values GO, this row says where they SIT |
 | Persistent surfaces (ledger, host log, transcripts) | must never hold values | | ledger from pre-substitution arguments; scrubbed failure text; log-capture invariant test |
 | BossTerm built-in tools | outside the boundary | | documented exclusion; references are never resolved there |
 

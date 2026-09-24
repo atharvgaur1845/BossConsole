@@ -2373,7 +2373,12 @@ later change is most likely to want to undo are recorded here so they are undone
   decrypts the referenced row and nothing else under the listing's own visibility rule; the
   resolver must not go back to walking `get_user_secrets`, which decrypted every row up to the
   hit and let an unknown id walk the whole vault on the agent's say-so. A call carries at most
-  `McpSecretPrePass.MAX_REFERENCES_PER_CALL` (16) distinct references, refused before any read.
+  `McpSecretPrePass.MAX_REFERENCES_PER_CALL` (16) distinct references, refused before any read -
+  a per-call bound, not a budget across calls, since every refusal above happens before the
+  prompt. Substitution is re-assessed: the risk evaluator runs again on the substituted arguments
+  and the call is refused when the level went up, because the operator read the arguments with the
+  reference still in them and a resolved value that is shell syntax would change what they
+  approved. Refused rather than re-prompted, since a re-prompt would have to display the value.
 - **All or nothing.** One malformed or unresolvable reference refuses the whole call before any
   prompt. A handler must never receive placeholder text it might mistake for a value; that is
   also why `secretReferencesEnabled = false` refuses rather than passes through.

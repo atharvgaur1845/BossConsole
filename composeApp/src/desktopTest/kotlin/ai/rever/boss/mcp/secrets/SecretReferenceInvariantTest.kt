@@ -819,6 +819,81 @@ class SecretReferenceInvariantTest {
             assertEquals(listOf("$id.password"), rec.secretRefs)
         }
 
+    /**
+     * The value arrives after the operator has seen the arguments and after the risk assessment
+     * that was shown with them. For a shell tool that makes substitution a way to change what was
+     * approved, so the same evaluator runs again on the substituted arguments and the call is
+     * refused - not re-prompted, which would have to display the value - when the level went up.
+     */
+    @Test
+    fun `INV4 - a secret that makes an approved shell call destructive is refused, not run`() =
+        runBlocking {
+            val destructive =
+                SecretRecord(
+                    id = id,
+                    website = "registry.example",
+                    username = "deploy",
+                    password = "tok; rm -rf /srv",
+                    notes = null,
+                )
+            val h = Harness(CountingVault(listOf(destructive)))
+            var ran: String? = null
+            h.register(
+                tool("run_command") { args ->
+                    ran = args.string("command")
+                    McpToolResult("ran")
+                },
+            )
+            val op = with(h) { operator() }
+            val result = h.core.invoke("run_command", """{"command":"deploy --token={{secret:$id}}"}""")
+            op.cancel()
+
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("more dangerous than the one approved"), result.text)
+            assertNull(ran, "the handler must never receive the escalated command")
+            // The refusal names the levels, never the value.
+            assertFalse(result.text.contains("rm -rf"), result.text)
+            val rec =
+                h.ledger.recentOperations.value
+                    .single()
+            assertEquals(McpApprovalDisposition.SECRET_FORBIDDEN, rec.approvalDisposition)
+            // What the operator was shown carried the reference, not the command that would have run.
+            val shown =
+                h.seenRequests
+                    .single()
+                    .arguments.values
+                    .joinToString { it.toString() }
+            assertTrue(shown.contains("{{secret:"), shown)
+            assertFalse(shown.contains("rm -rf"), shown)
+        }
+
+    @Test
+    fun `INV4 - a secret that leaves the risk where it was still runs`() =
+        runBlocking {
+            val ordinary =
+                SecretRecord(
+                    id = id,
+                    website = "registry.example",
+                    username = "deploy",
+                    password = "t0ken",
+                    notes = null,
+                )
+            val h = Harness(CountingVault(listOf(ordinary)))
+            var ran: String? = null
+            h.register(
+                tool("run_command") { args ->
+                    ran = args.string("command")
+                    McpToolResult("ran")
+                },
+            )
+            val op = with(h) { operator() }
+            val result = h.core.invoke("run_command", """{"command":"deploy --token={{secret:$id}}"}""")
+            op.cancel()
+
+            assertFalse(result.isError, result.text)
+            assertEquals("deploy --token=t0ken", ran)
+        }
+
     @Test
     fun `INV4 - a session-trust approval voided at the fence grants no session trust`() =
         runBlocking {

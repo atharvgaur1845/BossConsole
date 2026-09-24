@@ -1,6 +1,8 @@
 package ai.rever.boss.mcp.secrets
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 /**
  * The slice of a vault entry the resolver needs. Mapped from the host's own secret model at the
@@ -84,18 +86,26 @@ class SecretReferenceResolver(
     }
 
     /**
-     * One lookup per distinct id, in the order the references were written. A lookup that fails
-     * fails the whole call: a partial answer would be a partial call. A miss does not; it is
-     * reported by [refusalFor] with every other miss, so the agent learns all of them at once.
+     * One lookup per distinct id, issued together rather than one after another: the reads are
+     * independent, they all happen before the operator is prompted, and a call may carry up to
+     * [ai.rever.boss.mcp.secrets.McpSecretPrePass.MAX_REFERENCES_PER_CALL] of them, so serialising
+     * would put that many round trips in front of the prompt for no gain.
+     *
+     * A lookup that fails fails the whole call: a partial answer would be a partial call. A miss
+     * does not; it is reported by [refusalFor] with every other miss, so the agent learns all of
+     * them at once. The result keeps the reference order, which only the message ordering depends
+     * on, so nothing observable changed with the concurrency.
      */
-    private suspend fun findRecords(wanted: Set<String>): Result<Map<String, SecretRecord>> {
-        val found = HashMap<String, SecretRecord>()
-        for (id in wanted) {
-            val record = lookupById(id).getOrElse { return Result.failure(it) } ?: continue
-            found[id] = record
+    private suspend fun findRecords(wanted: Set<String>): Result<Map<String, SecretRecord>> =
+        coroutineScope {
+            val reads = wanted.map { id -> id to async { lookupById(id) } }
+            val found = LinkedHashMap<String, SecretRecord>()
+            for ((id, read) in reads) {
+                val record = read.await().getOrElse { return@coroutineScope Result.failure(it) } ?: continue
+                found[id] = record
+            }
+            Result.success(found)
         }
-        return Result.success(found)
-    }
 
     /** One lookup, with a throwing vault folded into the same failure as a returned one. */
     private suspend fun lookupById(id: String): Result<SecretRecord?> =

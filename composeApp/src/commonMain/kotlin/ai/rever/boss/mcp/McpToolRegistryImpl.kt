@@ -942,7 +942,9 @@ internal class McpToolRegistryCore(
                 }
             }
 
-    // One boundary must cover denial, approval, execution, and the ledger write.
+    // Keep authorization and execution inside the same cancellation audit boundary: every branch
+    // below has to reach the ledger write in the `finally`, so splitting it would either lose a
+    // disposition or duplicate that write.
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     suspend fun invoke(
         toolName: String,
@@ -990,18 +992,20 @@ internal class McpToolRegistryCore(
                 }
             disposition = authorization.first
             val denial = authorization.second
+            // Read once, after the prompt returned: two reads could see two different postures.
+            val secretRefusal = if (secrets is SecretPreparation.Ready) secretFenceRefusal() else null
             result =
                 when {
                     denial != null -> {
                         McpToolResult(denial, isError = true)
                     }
 
-                    // Before the tool's own fence, so losing secret.read mid-prompt is recorded as
-                    // what it is, and so confirmInvocation never grants session trust on the
-                    // strength of an approval the secret side has already voided.
-                    secrets is SecretPreparation.Ready && !secretAccessPermitted() -> {
+                    // Before the tool's own fence, so a secret-side refusal is recorded as what
+                    // it is, and so confirmInvocation never grants session trust on the strength
+                    // of an approval the secret side has already voided.
+                    secretRefusal != null -> {
                         disposition = McpApprovalDisposition.SECRET_FORBIDDEN
-                        McpToolResult(SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL, isError = true)
+                        McpToolResult(secretRefusal, isError = true)
                     }
 
                     !confirmApproval(tool, revocation, disposition) || !isAvailable(tool) -> {
@@ -1010,8 +1014,15 @@ internal class McpToolRegistryCore(
                     }
 
                     else -> {
-                        executionStarted = true
-                        executeAuthorized(tool, secrets.executionArgs(args), secrets.resultFilter())
+                        val substituted = secrets.executionArgs(args)
+                        val escalation = secretEscalationRefusal(tool, args, substituted, secrets)
+                        if (escalation != null) {
+                            disposition = McpApprovalDisposition.SECRET_FORBIDDEN
+                            McpToolResult(escalation, isError = true)
+                        } else {
+                            executionStarted = true
+                            executeAuthorized(tool, substituted, secrets.resultFilter())
+                        }
                     }
                 }
             return requireNotNull(result)
@@ -1103,6 +1114,81 @@ internal class McpToolRegistryCore(
                     declaredReadOnly = tool.definition.readOnly,
                 )
         }
+
+    /**
+     * Why a resolved secret-bearing call must not run after all, or null to proceed.
+     *
+     * Everything the secret pre-pass decided before the prompt is decided again here, because the
+     * prompt is a window in which an operator can change their mind about the host's posture and
+     * then answer the older question: `secret.read` can be lost (signed out, permission removed),
+     * and the two host switches can be turned off. `confirmInvocation` re-asserts the tool's own
+     * policy and the revocation stamp; this is the same fence for the secret side, so the
+     * asymmetry the permission check used to have on its own is gone.
+     */
+    private fun secretFenceRefusal(): String? {
+        val config = policyEngine.config.value
+        return when {
+            !secretAccessPermitted() -> {
+                SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
+            }
+
+            !config.secretReferencesEnabled -> {
+                "Secret references were disabled while awaiting approval; the call was not run"
+            }
+
+            config.secretBearingCalls == McpSecretPolicyAction.DENY -> {
+                "Secret-bearing calls were refused by host policy while awaiting approval; the call was not run"
+            }
+
+            else -> {
+                null
+            }
+        }
+    }
+
+    /**
+     * Why a resolved call must not run because SUBSTITUTION made it more dangerous than what the
+     * operator was shown, or null to proceed.
+     *
+     * The operator approves the arguments the agent wrote, with `{{secret:...}}` still in them, and
+     * the risk assessment on the prompt is of those arguments. The value arrives afterwards, and
+     * for a tool whose argument is shell text the value is shell text too: a stored secret
+     * containing `;`, `|` or `$(...)` turns an approved `deploy --token={{secret:...}}` into a
+     * command the operator never saw and `CLISecurityValidator.isValidCommand` does not catch,
+     * because that check is shape and length only. The secret need not even be the approver's own:
+     * an organisation's secret is resolvable by any member.
+     *
+     * So the same evaluator runs again on the substituted arguments, and the call is REFUSED, not
+     * re-prompted, when the level went up: re-prompting would have to show the operator the
+     * expanded command, which is the value itself, and this path exists precisely so the value is
+     * never displayed. A refusal costs a legitimate caller a retry with the command spelled out
+     * through `open_terminal`; the alternative is running something nobody approved.
+     *
+     * Only for a resolved secret-bearing call: every other invocation executes the arguments that
+     * were assessed, so there is nothing to re-assess.
+     */
+    @Suppress("ReturnCount") // Not-applicable, no-escalation and refused are three distinct answers.
+    private fun secretEscalationRefusal(
+        tool: RegisteredMcpTool,
+        original: McpToolArgs,
+        substituted: McpToolArgs,
+        secrets: SecretPreparation,
+    ): String? {
+        if (secrets !is SecretPreparation.Ready) return null
+        val evaluator = DefaultMcpRiskEvaluator()
+        val toolName = tool.definition.name
+        val before = evaluator.evaluateRisk(toolName, original).level
+        val after = evaluator.evaluateRisk(toolName, substituted).level
+        if (after <= before) return null
+        logger.warn(
+            LogCategory.SYSTEM,
+            "MCP secret substitution raised the risk of an approved call; refusing",
+            mapOf("tool" to toolName, "from" to before.name, "to" to after.name),
+        )
+        return "A resolved secret made this call more dangerous than the one approved " +
+            "(risk $before to $after), so it was not run. The value is not shown; if this is " +
+            "expected, invoke the command explicitly through open_terminal."
+    }
 
     private fun secretAccessPermitted(): Boolean {
         val access = accessSnapshot

@@ -59,6 +59,11 @@ internal class McpSecretPrePass(
      * 6. More than [MAX_REFERENCES_PER_CALL] references: unresolved, before any vault read.
      * 7. Resolve, all or nothing, one vault read per reference. The values are held for this
      *    call only; the operator sees descriptors, and the handler sees values only after approval.
+     *
+     * The numbering here is the one `docs/MCP_SECRET_REFERENCES.md` uses under "What happens to a
+     * call, in order"; the two are meant to be read together, so a step added in one belongs in
+     * the other. Steps after resolution (the approval fences, the substitution re-assessment) are
+     * the registry's and are numbered there.
      */
     @Suppress("ReturnCount", "LongMethod", "CyclomaticComplexMethod")
     suspend fun prepare(
