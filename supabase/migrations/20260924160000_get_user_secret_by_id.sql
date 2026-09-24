@@ -1,7 +1,7 @@
 -- ============================================================================
 -- BOSS Database Schema: one secret by id, for the host's reference resolver
 -- ============================================================================
--- File: 20260919000000_get_user_secret_by_id.sql
+-- File: 20260924160000_get_user_secret_by_id.sql
 --
 -- The MCP secret-reference resolver (docs/MCP_SECRET_REFERENCES.md) turns
 -- `{{secret:<id>}}` in an agent's tool arguments into the stored value at the

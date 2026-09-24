@@ -1,4 +1,4 @@
--- pgTAP tests for get_user_secret_by_id (migration 20260919000000): one row,
+-- pgTAP tests for get_user_secret_by_id (migration 20260924160000): one row,
 -- decrypted, under exactly get_user_secrets' visibility and shape.
 -- Run with: supabase test db
 --
