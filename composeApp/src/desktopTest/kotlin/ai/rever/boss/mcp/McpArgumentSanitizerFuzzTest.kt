@@ -158,9 +158,10 @@ class McpArgumentSanitizerFuzzTest {
                 }
             }
         }
-        // distinct() first: `repeat(3)` means one context-independent rule gap is found three
-        // times, and a report of three lines under a count of nine reads as two different facts.
-        val distinct = failures.distinct()
+        // One entry per shape and context: each failure string embeds that repetition's random
+        // secret, so a plain distinct() would collapse nothing and `repeat(3)` would report every
+        // leaking cell three times.
+        val distinct = failures.distinctBy { it.substringBefore('\n') }
         val report = distinct.joinToString("\n")
         assertTrue(
             distinct.isEmpty(),
@@ -204,6 +205,9 @@ class McpArgumentSanitizerFuzzTest {
             "docker run -u 1000:1000 nginx",
             "docker run --user=1000:1000 nginx",
             "podman run --user 0:0 alpine id",
+            "git checkout -b feature/login-fix",
+            "cp -b src.txt dst.txt",
+            "ssh -b 10.0.0.1 host.example.invalid",
             "ssh -p 2222 deploy@host.example.invalid",
             "grep -rn 'password' src/ --include='*.kt'",
             "cat docs/tokens.md",
