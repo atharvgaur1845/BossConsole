@@ -1189,6 +1189,13 @@ internal class McpToolRegistryCore(
                     "for approval. Open the Space through the workspace UI instead.",
             )
         }
+        if (commands.sumOf { it.length } > MAX_STORED_COMMANDS_TOTAL_CHARS) {
+            return StoredCommandsPreview(
+                emptyList(),
+                "This call would run more than $MAX_STORED_COMMANDS_TOTAL_CHARS characters of stored commands, " +
+                    "more than can be shown for approval. Open the Space through the workspace UI instead.",
+            )
+        }
         return StoredCommandsPreview(commands)
     }
 

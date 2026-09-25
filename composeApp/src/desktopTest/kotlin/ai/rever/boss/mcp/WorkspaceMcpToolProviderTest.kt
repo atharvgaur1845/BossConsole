@@ -337,7 +337,7 @@ class WorkspaceMcpToolProviderTest {
     @Test
     fun `a shipped template's own startup commands need no approval`() =
         runBlocking {
-            val template = PredefinedWorkspaces.allWorkspaces.first { it.layout.hasInitialCommands() }
+            val template = PredefinedWorkspaces.allWorkspaces.first { it.layout.initialCommands().isNotEmpty() }
             val commands =
                 WorkspaceMcpToolProvider.storedCommandsFor(
                     "open_workspace",
@@ -375,8 +375,9 @@ class WorkspaceMcpToolProviderTest {
                     listOf(TabConfig(type = "terminal", title = "Shell", initialCommand = "echo hidden")),
                 ),
             )
-        assertFalse(empty.hasInitialCommands())
-        assertTrue(SplitConfig.VerticalSplit(empty, SplitConfig.HorizontalSplit(empty, commands)).hasInitialCommands())
+        assertTrue(empty.initialCommands().isEmpty())
+        val nested = SplitConfig.VerticalSplit(empty, SplitConfig.HorizontalSplit(empty, commands))
+        assertEquals(listOf("echo hidden"), nested.initialCommands())
     }
 
     @Test
@@ -1355,15 +1356,18 @@ class WorkspaceMcpToolProviderTest {
                     """{"path":"$projectPath","windowId":"$windowId"}""",
                 )
             assertTrue(byPath.isError, byPath.text)
+            assertTrue(byPath.text.startsWith("Workspace contains terminal startup commands"), byPath.text)
 
-            // Gated exactly like the id mode: the same refusal, word for word.
+            // The id mode reaches the same Space through McpStoredCommandSource instead: it asks
+            // the operator with the commands listed. This core has no operator, so the prompt goes
+            // unanswered and nothing runs - asked, not refused, and not run either way.
             val byId =
                 core.invoke(
                     "open_workspace",
                     """{"workspaceId":"workspace-path-marker","windowId":"$windowId"}""",
                 )
             assertTrue(byId.isError, byId.text)
-            assertEquals(byId.text, byPath.text)
+            assertEquals("MCP tool timed out waiting for operator approval", byId.text)
 
             // The gate fired before the Space was entered: nothing was loaded into the
             // window, so no terminal carrying the command was applied and no shell ran it.

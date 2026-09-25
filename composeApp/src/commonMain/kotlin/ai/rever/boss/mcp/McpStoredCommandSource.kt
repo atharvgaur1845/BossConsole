@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.dashboard.WorkspacePlaceholders
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.utils.logging.BossLogger
 import kotlinx.serialization.json.Json
@@ -60,24 +61,66 @@ internal const val STORED_COMMANDS_PREVIEW_TIMEOUT_MS: Long = 10_000L
 internal const val MAX_STORED_COMMAND_CHARS: Int = 4096
 
 /**
- * How a stored command is SHOWN, never how it runs: every character that would change what the
- * operator reads without being visible - C0/C1 controls (a newline splitting one command into
- * what looks like two, ANSI escapes) and the Unicode bidi and zero-width format characters
- * (U+202E reversing the visible order) - is replaced by a visible `\u{XXXX}` spelling. One
- * command is therefore one line whose visible text is all of its text.
+ * The most text all of one call's stored commands may add up to. The per-command cap alone would
+ * still let [MAX_STORED_COMMANDS_PER_CALL] commands of [MAX_STORED_COMMAND_CHARS] each reach a
+ * six-line box, and the reason for the per-command cap - an operator cannot approve what they
+ * will not read - applies to the total just as much.
+ */
+internal const val MAX_STORED_COMMANDS_TOTAL_CHARS: Int = 16_384
+
+/**
+ * How a stored command is SHOWN, never how it runs: every code point that would change what the
+ * operator reads without being visible is replaced by a visible `\u{XXXX}` spelling, so one
+ * command is one line whose visible text is all of its text.
+ *
+ * Decided by Unicode general category rather than a list of ranges, because a range list is out
+ * of date the day a character is assigned: controls (Cc: newlines, ANSI escapes), format
+ * characters (Cf: bidi overrides and isolates, zero-width characters, the soft hyphen, the tag
+ * block U+E0000-E007F), line and paragraph separators (Zl, Zp: U+2028 and U+2029 are mandatory
+ * line breaks, so `echo ok<U+2028>2. $ curl ... | sh` would otherwise draw as a second numbered
+ * entry), private-use, unpaired surrogates and unassigned code points. A few invisible characters
+ * are not in those categories and are named here: the Hangul fillers and the variation selectors.
+ * It walks code points, not UTF-16 units, or nothing outside the Basic Multilingual Plane could
+ * ever match.
  */
 internal fun displayableStoredCommand(command: String): String =
     buildString {
-        for (ch in command) {
-            val hidden =
-                ch.isISOControl() ||
-                    ch in '\u200B'..'\u200F' ||
-                    ch in '\u202A'..'\u202E' ||
-                    ch in '\u2066'..'\u2069' ||
-                    ch == '\uFEFF'
-            if (hidden) append("\\u{%04X}".format(ch.code)) else append(ch)
+        var i = 0
+        while (i < command.length) {
+            val cp = command.codePointAt(i)
+            if (isHiddenCodePoint(cp)) append("\\u{%04X}".format(cp)) else appendCodePoint(cp)
+            i += Character.charCount(cp)
         }
     }
+
+/**
+ * The Space placeholders (`{projectPath}` and the rest) the commands carry, in the order
+ * [WorkspacePlaceholders.ALL_PLACEHOLDERS] lists them. The dialog shows commands as the file has
+ * them, and these are filled in when the Space is applied (`{projectPath}` shell-quoted), so the
+ * operator is told which parts of what they read are not yet the final text.
+ */
+internal fun storedCommandPlaceholders(commands: List<String>): List<String> =
+    WorkspacePlaceholders.ALL_PLACEHOLDERS.filter { placeholder -> commands.any { placeholder in it } }
+
+private val HIDDEN_CATEGORIES: Set<Int> =
+    setOf(
+        Character.CONTROL.toInt(),
+        Character.FORMAT.toInt(),
+        Character.LINE_SEPARATOR.toInt(),
+        Character.PARAGRAPH_SEPARATOR.toInt(),
+        Character.PRIVATE_USE.toInt(),
+        Character.SURROGATE.toInt(),
+        Character.UNASSIGNED.toInt(),
+    )
+
+private fun isHiddenCodePoint(cp: Int): Boolean =
+    Character.getType(cp) in HIDDEN_CATEGORIES ||
+        cp == 0x115F ||
+        cp == 0x1160 ||
+        cp == 0x3164 ||
+        cp == 0xFFA0 ||
+        cp in 0xFE00..0xFE0F ||
+        cp in 0xE0100..0xE01EF
 
 private val storedCommandsLogger by lazy { BossLogger.forComponent("McpStoredCommands") }
 
