@@ -716,19 +716,16 @@ private fun StoredCommandsSection(commands: List<String>) {
                             alpha = STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf { storedCommandsOverflow(commands) },
                         ),
                 ).verticalScroll(scroll)
-                .padding(8.dp),
+                .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // Numbered, and each shown through displayableStoredCommand, so one command is one entry
-        // whose visible text is all of its text: no newline can split it into two, and no bidi
-        // or zero-width character can reorder or hide part of it.
-        commands.forEachIndexed { index, command ->
-            Text(
-                text = "${index + 1}. $ ${displayableStoredCommand(command)}",
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace,
-                color = colors.textPrimary,
-            )
-        }
+        // Each shown through displayableStoredCommand, so one command is one entry whose visible
+        // text is all of its text: no newline can split it into two, and no bidi or zero-width
+        // character can reorder or hide part of it. Each entry is also its own bordered block with
+        // the number in a column of its own, so a line that SOFT-wraps (a run of spaces pushing
+        // "2. $ curl ... | sh" onto the next line) hangs under the command text, inside the block
+        // it belongs to, and can never start where an entry number goes.
+        commands.forEachIndexed { index, command -> StoredCommandEntry(index, command) }
     }
     val placeholders = storedCommandPlaceholders(commands)
     if (placeholders.isNotEmpty()) {
@@ -740,6 +737,42 @@ private fun StoredCommandsSection(commands: List<String>) {
         )
     }
 }
+
+/** One stored command: a bordered block, the number in its own column, the command beside it. */
+@Composable
+private fun StoredCommandEntry(
+    index: Int,
+    command: String,
+) {
+    val colors = BossTheme.colors
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag(storedCommandEntryTag(index))
+                .background(colors.panel, RoundedCornerShape(3.dp))
+                .border(1.dp, colors.line, RoundedCornerShape(3.dp))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = "${index + 1}. $",
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            color = colors.textSecondary,
+            modifier = Modifier.padding(end = 6.dp),
+        )
+        Text(
+            text = displayableStoredCommand(command),
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            color = colors.textPrimary,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** Test tag of the [index]th stored-command entry, one bordered block per command. */
+internal fun storedCommandEntryTag(index: Int): String = "mcp-stored-command-$index"
 
 /** The line under the commands saying which parts are filled in only when the Space opens. */
 internal fun storedCommandsPlaceholderNote(placeholders: List<String>): String =

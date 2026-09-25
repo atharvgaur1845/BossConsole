@@ -2404,13 +2404,17 @@ and nobody else's; a Space whose commands changed between the prompt and the ope
 A source that throws refuses the call, and more than `MAX_STORED_COMMANDS_PER_CALL` commands
 are refused before any prompt, as is any command over `MAX_STORED_COMMAND_CHARS`, commands adding
 up to more than `MAX_STORED_COMMANDS_TOTAL_CHARS`, or a source that does not answer within
-`STORED_COMMANDS_PREVIEW_TIMEOUT_MS`. A call refused there never reaches the secret pre-pass, so
+`STORED_COMMANDS_PREVIEW_TIMEOUT_MS`. So is a command the argument sanitizer would change
+(`storedCommandShownInFull`): `export TOKEN="$(curl ... | sh)"` would be shown as
+`export [REDACTED]` and run in full, and the prompt exists so the operator reads what runs. A call refused there never reaches the secret pre-pass, so
 it reads nothing from the vault. The prompt is presented as #1624's escalated prompt (no durable
 allow; a durable deny stays available, and its wording names the commands rather than
 destructiveness), and YOLO mode does not answer it. Each command is shown through
 `displayableStoredCommand`, which walks code points and escapes by Unicode category (controls,
 format characters including the tag block, line and paragraph separators, private-use,
-unassigned) plus the invisible fillers and variation selectors. Keep it a category test: a range
+unassigned) plus the invisible fillers and variation selectors, and sits in a bordered entry of
+its own with the number in a separate column, so a line that soft-wraps (a run of spaces pushing
+`2. $ curl ...` onto the next line) hangs inside its entry instead of reading as the next one. Keep it a category test: a range
 list goes out of date, and U+2028 was exactly such a gap, a mandatory line break that drew one
 command as two numbered entries. The commands are shown as the file has them; when they carry
 `{projectPath}` or another Space placeholder, the dialog says those are filled in when the Space

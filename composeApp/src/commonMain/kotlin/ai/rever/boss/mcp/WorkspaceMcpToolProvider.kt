@@ -807,12 +807,12 @@ object WorkspaceMcpToolProvider :
 
         // Path mode re-enters the SAME saved Spaces the id mode resolves above -
         // matchExistingSpace's rule 3 applies any saved Space for this project path exactly as
-        // picking it in the Space switcher would - so the two modes must share one gate: a
-        // Space whose stored terminal commands the id mode refuses must not have them typed
-        // into a shell because the caller reached for a path instead of an id (#920). The gate
-        // sits before the reuse fast path for the same reason the id mode's gate sits before
-        // its already-active return: entering the Space through this tool at all is what is
-        // refused, not only the apply.
+        // picking it in the Space switcher would. The id mode shows that Space's stored terminal
+        // commands in the approval prompt and runs them only on that approval
+        // (McpStoredCommandSource); path mode has no such preview, so it keeps refusing a Space
+        // that carries any, or a caller could have them typed into a shell by reaching for a path
+        // instead of an id (#920). The refusal sits before the reuse fast path because entering
+        // the Space through this mode at all is what is refused, not only the apply.
         initialCommandsRefusal(space, space.id in PredefinedWorkspaces.allIds)?.let { return it }
 
         // Fast path: the window already shows this Space, so the live terminal is left alone.

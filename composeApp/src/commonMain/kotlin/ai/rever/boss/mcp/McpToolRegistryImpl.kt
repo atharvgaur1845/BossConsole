@@ -1196,6 +1196,13 @@ internal class McpToolRegistryCore(
                     "more than can be shown for approval. Open the Space through the workspace UI instead.",
             )
         }
+        if (!commands.all(::storedCommandShownInFull)) {
+            return StoredCommandsPreview(
+                emptyList(),
+                "A stored command contains text the host masks as a credential, so it cannot be shown in full " +
+                    "for approval. Open the Space through the workspace UI instead.",
+            )
+        }
         return StoredCommandsPreview(commands)
     }
 

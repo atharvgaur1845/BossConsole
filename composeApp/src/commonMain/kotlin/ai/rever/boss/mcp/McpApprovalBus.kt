@@ -158,6 +158,9 @@ open class McpApprovalBus(
                 policy = policy,
                 escalated = escalated,
                 secretRefs = secretRefs,
+                // Identity for anything the registry lets through (a command the sanitizer would
+                // change is refused before the prompt, see storedCommandShownInFull); kept so a
+                // request built some other way still never carries an unsanitized command.
                 storedCommands = storedCommands.map { McpArgumentSanitizer.sanitizeMessage(it) },
             )
 
