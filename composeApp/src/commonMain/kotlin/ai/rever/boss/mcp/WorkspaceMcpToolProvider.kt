@@ -635,9 +635,9 @@ object WorkspaceMcpToolProvider :
         // if the registry showed them to the operator and handed the approved list back (see
         // McpStoredCommandSource). The list must match what the file says now, command for
         // command and in order: a Space edited between the prompt and this point is not the one approved.
-        if (!isShippedTemplate && workspace.layout.hasInitialCommands()) {
+        val stored = if (isShippedTemplate) emptyList() else workspace.layout.initialCommands()
+        if (stored.isNotEmpty()) {
             val approved = args.approvedStoredCommands()
-            val stored = workspace.layout.initialCommands()
             if (approved == null) {
                 return McpToolResult(
                     "Workspace contains terminal startup commands that were not approved for this call. " +
@@ -757,7 +757,7 @@ object WorkspaceMcpToolProvider :
         space: LayoutWorkspace,
         isShippedTemplate: Boolean,
     ): McpToolResult? {
-        if (isShippedTemplate || !space.layout.hasInitialCommands()) {
+        if (isShippedTemplate || space.layout.initialCommands().isEmpty()) {
             return null
         }
         return McpToolResult(
@@ -1606,8 +1606,6 @@ internal fun matchesProjectPath(
 /** IDs are names in the workspace store, never caller-selected filesystem paths. */
 internal fun isSafeWorkspaceId(id: String): Boolean =
     id.isNotBlank() && id != "." && ".." !in id && id.none { it == '/' || it == '\\' || it == ':' || it.isISOControl() }
-
-internal fun SplitConfig.hasInitialCommands(): Boolean = initialCommands().isNotEmpty()
 
 /** Every non-blank terminal `initialCommand` in this layout, in tab order. */
 internal fun SplitConfig.initialCommands(): List<String> =

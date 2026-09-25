@@ -6,6 +6,7 @@ import ai.rever.boss.mcp.McpApprovalRequest
 import ai.rever.boss.mcp.McpMutatingToolCatalog
 import ai.rever.boss.mcp.displayableStoredCommand
 import ai.rever.boss.mcp.secrets.SecretDescriptor
+import ai.rever.boss.mcp.storedCommandPlaceholders
 import ai.rever.boss.plugin.scrollbar.getPanelScrollbarConfig
 import ai.rever.boss.plugin.scrollbar.scrollbar
 import ai.rever.boss.plugin.ui.BossDialog
@@ -154,14 +155,24 @@ internal object McpPromptChoices {
 
     /** Title and description of the "Always, for this tool" option, which only denies when escalated. */
     fun alwaysToolText(request: McpApprovalRequest): Pair<String, String> =
-        if (request.escalated) {
-            "Always deny this tool" to
-                "Saves a deny by tool name, across restarts. Allowing still runs just this call: a saved " +
-                "allow cannot pre-approve a destructive one."
-        } else {
-            "Always, for this tool" to
-                "Saved by tool name for all agents and arguments, across restarts - including a replacement " +
-                "plugin that ships a tool with this name."
+        when {
+            request.escalated && request.storedCommands.isNotEmpty() -> {
+                "Always deny this tool" to
+                    "Saves a deny by tool name, across restarts. Allowing still runs just this call: a saved " +
+                    "allow cannot pre-approve commands that are not in the arguments."
+            }
+
+            request.escalated -> {
+                "Always deny this tool" to
+                    "Saves a deny by tool name, across restarts. Allowing still runs just this call: a saved " +
+                    "allow cannot pre-approve a destructive one."
+            }
+
+            else -> {
+                "Always, for this tool" to
+                    "Saved by tool name for all agents and arguments, across restarts - including a replacement " +
+                    "plugin that ships a tool with this name."
+            }
         }
 }
 
@@ -719,14 +730,34 @@ private fun StoredCommandsSection(commands: List<String>) {
             )
         }
     }
+    val placeholders = storedCommandPlaceholders(commands)
+    if (placeholders.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = storedCommandsPlaceholderNote(placeholders),
+            fontSize = 11.sp,
+            color = colors.textSecondary,
+        )
+    }
 }
+
+/** The line under the commands saying which parts are filled in only when the Space opens. */
+internal fun storedCommandsPlaceholderNote(placeholders: List<String>): String =
+    "${placeholders.joinToString(", ")} " +
+        (if (placeholders.size == 1) "is" else "are") +
+        " filled in when the Space opens, from the project it opens in" +
+        (if ("{projectPath}" in placeholders) " ({projectPath} as one shell-quoted argument)." else ".")
 
 private val STORED_COMMANDS_BOX_HEIGHT = 120.dp
 private const val STORED_COMMANDS_SCROLLBAR_ALPHA = 0.7f
 
-/** Lines of 12sp monospace that fit the box, and characters per line at the dialog's width. */
+/**
+ * Lines of 12sp monospace that fit the box, and characters per line. The dialog is a fixed 520dp,
+ * which fits about 64 monospace characters; 48 leaves room for glyphs a fallback font draws wider
+ * (CJK is two cells) and for a smaller density, so the count errs toward the bar being shown.
+ */
 private const val STORED_COMMANDS_VISIBLE_LINES = 6
-private const val STORED_COMMANDS_CHARS_PER_LINE = 60
+private const val STORED_COMMANDS_CHARS_PER_LINE = 48
 
 /**
  * Whether the commands, as displayed, need more lines than the box shows. Arithmetic over the

