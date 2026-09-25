@@ -169,11 +169,16 @@ readable.
 
 Each record gains `secretRefs`, a list of `<id>.<field>`. The `sanitizedArgs` field is built from
 the arguments the agent wrote, references intact; the substituted arguments never reach the
-ledger. A reference stays legible there because the argument sanitizer masks every valid
-reference before its redaction rules run and restores it afterwards; text glued to a reference
-(`TOKEN={{secret:<id>}}hunter2`) is redacted together with it, and a malformed reference, whose
-text may be a pasted value, is redacted like any other assignment. Old records without the field
-decode with an empty default. Two new dispositions:
+ledger. In free text a reference stays legible there, because the argument sanitizer masks every
+valid reference before its redaction rules run and restores it afterwards; text glued to a
+reference (`TOKEN={{secret:<id>}}hunter2`) is redacted together with it. Two shapes still record
+`[REDACTED]` in place of the reference: a value under a key whose name marks it sensitive
+(`password`, `token`, `secret`, `auth`, ...), which the sanitizer blanks whole without reading it,
+and a quoted value inside a JSON string (`{"token":"{{secret:<id>}}"}`). Nothing is lost in either
+case: `secretRefs` records which secrets the call received independently of `sanitizedArgs`. A
+malformed reference is refused with an error that repeats nothing the agent wrote (only which rule
+failed), so a value pasted where the id belongs cannot reach the error text or the ledger's
+`errorSnippet`. Old records without the field decode with an empty default. Two new dispositions:
 
 - `SECRET_FORBIDDEN`: the host would not deliver (permission, policy, feature off, AI-provider key,
   or `secret.read` lost while the prompt was open).

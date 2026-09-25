@@ -396,6 +396,38 @@ class SecretReferenceInvariantTest {
         }
 
     @Test
+    fun `INV1 - no malformed shape echoes what the agent wrote, whatever the sanitizer would miss`() =
+        runBlocking {
+            // Each shape puts pasted words where the sanitizer's VALUE class cannot follow them:
+            // past a space, into the field slot, into an unterminated marker, into a JSON key.
+            val shapes =
+                mapOf(
+                    """{"a":"{{secret:correct horse battery staple}}"}""" to
+                        listOf("correct", "horse", "battery", "staple"),
+                    """{"a":"{{secret:$id.hunter2field}}"}""" to listOf("hunter2field"),
+                    """{"a":"{{secret:tangerine walrus, no closing braces"}""" to
+                        listOf("tangerine", "walrus", "closing"),
+                    """{"{{secret:quokka-in-a-key}}":"x"}""" to listOf("quokka"),
+                )
+            val leaks = mutableListOf<String>()
+            for ((args, words) in shapes) {
+                val h = Harness(CountingVault(listOf(record)))
+                h.register(tool("write") { McpToolResult("ran") })
+                val result = h.core.invoke("write", args)
+                assertTrue(result.isError, args)
+                assertTrue(result.text.startsWith("Malformed secret reference"), result.text)
+                val snippet =
+                    h.ledger.recentOperations.value
+                        .single()
+                        .errorSnippet
+                        .orEmpty()
+                words.filter { result.text.contains(it) }.forEach { leaks += "$args -> result: '$it'" }
+                words.filter { snippet.contains(it) }.forEach { leaks += "$args -> ledger: '$it'" }
+            }
+            assertTrue(leaks.isEmpty(), leaks.joinToString("\n"))
+        }
+
+    @Test
     fun `INV1 - unparseable arguments are not copied into the host log`() {
         val pasted = "hunter2-pasted-value"
         val logger = BossLogger.forComponent("SecretReferenceInvariantTest")

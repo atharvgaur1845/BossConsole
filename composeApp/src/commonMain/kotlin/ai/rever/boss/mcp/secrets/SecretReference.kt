@@ -75,15 +75,29 @@ sealed interface SecretReferenceScan {
     ) : SecretReferenceScan
 
     /**
-     * Something that looks like a reference does not parse. [literal] is the offending text,
-     * exactly as the agent typed it, so it is NOT safe to show as is: an agent that pasted a value
-     * where the id belongs (`{{secret:hunter2}}`) produced a malformed reference whose literal is
-     * that value. Anything that surfaces it goes through `McpArgumentSanitizer.sanitizeMessage`.
+     * Something that looks like a reference does not parse.
+     *
+     * Deliberately carries no agent text. The offending candidate is exactly the text a value
+     * gets pasted into (`{{secret:hunter2}}`, `{{secret:correct horse battery staple}}`,
+     * `{{secret:<id>.hunter2}}`), and no redaction pass can tell a pasted value from a typo, so
+     * the refusal names the rule that failed and nothing the agent wrote. [reason] is a closed
+     * set of host-authored sentences for the same reason.
      */
     data class Malformed(
-        val literal: String,
-        val reason: String,
+        val reason: MalformedSecretReference,
     ) : SecretReferenceScan
+}
+
+/** Why a reference did not parse, in host-authored words that repeat nothing the agent sent. */
+enum class MalformedSecretReference(
+    val text: String,
+) {
+    NOT_AN_ID("the id is not a secret id (expected a UUID)"),
+    UNKNOWN_FIELD(
+        "unknown field (expected one of " + SecretField.entries.joinToString { it.wireName } + ")",
+    ),
+    UNTERMINATED("the reference is not terminated with }}"),
+    IN_JSON_KEY("a secret reference cannot be a JSON key"),
 }
 
 /**
@@ -117,7 +131,7 @@ object SecretReferenceParser {
      */
     private fun parseBody(
         body: String,
-        onMalformed: (String) -> Unit,
+        onMalformed: (MalformedSecretReference) -> Unit,
     ): SecretReference? {
         val dot = body.indexOf('.')
         val idPart = if (dot < 0) body else body.substring(0, dot)
@@ -125,15 +139,12 @@ object SecretReferenceParser {
         val field = if (fieldPart == null) SecretField.PASSWORD else SecretField.fromWireName(fieldPart)
         return when {
             !uuid.matches(idPart) -> {
-                onMalformed("the id is not a secret id (expected a UUID)")
+                onMalformed(MalformedSecretReference.NOT_AN_ID)
                 null
             }
 
             field == null -> {
-                onMalformed(
-                    "unknown field '$fieldPart' (expected one of " +
-                        SecretField.entries.joinToString { it.wireName } + ")",
-                )
+                onMalformed(MalformedSecretReference.UNKNOWN_FIELD)
                 null
             }
 
@@ -166,18 +177,13 @@ object SecretReferenceParser {
                 var malformed: SecretReferenceScan.Malformed? = null
                 val ref =
                     parseBody(match.groupValues[1]) { reason ->
-                        malformed = SecretReferenceScan.Malformed(match.value, reason)
+                        malformed = SecretReferenceScan.Malformed(reason)
                     }
                 malformed?.let { return it }
                 if (ref != null) found.add(ref)
             }
-            val unmatchedText = candidate.replace(text, "")
-            val unmatchedMarker = unmatchedText.indexOf(MARKER)
-            if (unmatchedMarker >= 0) {
-                return SecretReferenceScan.Malformed(
-                    unmatchedText.substring(unmatchedMarker).take(120),
-                    "the reference is not terminated with }}",
-                )
+            if (candidate.replace(text, "").contains(MARKER)) {
+                return SecretReferenceScan.Malformed(MalformedSecretReference.UNTERMINATED)
             }
         }
         return if (!any) SecretReferenceScan.None else SecretReferenceScan.Found(found)

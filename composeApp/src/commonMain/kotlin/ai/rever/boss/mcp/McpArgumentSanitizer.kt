@@ -301,8 +301,13 @@ object McpArgumentSanitizer {
             }
         val redacted = redact(masked)
         if (references.isEmpty()) return redacted
+        // Indices only come from masks written above, so a lookup cannot miss today. This runs on
+        // the ledger write path, which must never throw; a miss would redact, never reveal.
         return redacted.replace(referenceMask) { match ->
-            references[match.value.substring(1, match.value.length - 1).toInt()]
+            match.value
+                .substring(1, match.value.length - 1)
+                .toIntOrNull()
+                ?.let(references::getOrNull) ?: "[REDACTED]"
         }
     }
 

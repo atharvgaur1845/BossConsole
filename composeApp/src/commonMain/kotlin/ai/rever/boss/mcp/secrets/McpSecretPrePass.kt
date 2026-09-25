@@ -1,7 +1,6 @@
 package ai.rever.boss.mcp.secrets
 
 import ai.rever.boss.mcp.McpApprovalDisposition
-import ai.rever.boss.mcp.McpArgumentSanitizer
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpPolicyEngine
 import ai.rever.boss.mcp.McpSecretPolicyAction
@@ -99,13 +98,12 @@ internal class McpSecretPrePass(
                 }
 
                 is SecretReferenceScan.Malformed -> {
-                    // The literal goes through the argument sanitizer like every other agent text
-                    // that reaches the ledger: `{{secret:hunter2}}` is malformed precisely because
-                    // what sits after the colon is not an id, and it may be a pasted value.
-                    val shown = McpArgumentSanitizer.sanitizeMessage(scan.literal)
+                    // Nothing the agent wrote: this text reaches the agent and the ledger's
+                    // errorSnippet, and the candidate is where a pasted value would sit (see
+                    // SecretReferenceScan.Malformed). The reason alone says what to fix.
                     return SecretPreparation.Refused(
                         McpApprovalDisposition.SECRET_UNRESOLVED,
-                        "Malformed secret reference $shown: ${scan.reason}".take(240),
+                        "Malformed secret reference {{secret:...}}: ${scan.reason.text}",
                     )
                 }
 
