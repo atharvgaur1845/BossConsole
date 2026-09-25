@@ -2295,7 +2295,13 @@ in the alert colour with "Turn off YOLO mode" first in the menu.
 Preserve a backup before manual recovery of a damaged policy;
 the fault flow withholds all tools until recovery. No automatic quarantine UI is
 provided. Ledger redaction is bounded and best effort, not a guarantee for secrets
-under arbitrary keys. Queue overflow and cancellation before/after dispatch have
+under arbitrary keys. It must also never throw: `McpArgumentSanitizer.sanitizeMessage` runs in
+invoke's `finally` after the tool has run, and java.util.regex recurses once per iteration of a
+greedy or lazy GROUP repeat, so a rule written `(?:a|b)*` over agent input can overflow the stack
+and lose the ledger row of a call that already executed. Write repeated groups possessive (`*+`)
+or as a single character class; `McpArgumentSanitizerStackSafetyTest` runs every rule's trigger
+against pathological fillers on a 256 KB stack, so add a new rule's trigger to its list. A value
+the rules still cannot process is recorded as `[OMITTED: could not be sanitized]`, never raw. Queue overflow and cancellation before/after dispatch have
 distinct ledger dispositions. Risk classification from #336 feeds this same policy and approval path; there is
 no second sandbox prompt. Explicit policies and session trust retain precedence.
 HIGH/CRITICAL risk names use the mutating default alongside catalog-mutating
