@@ -60,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -689,6 +690,7 @@ internal fun SecretReferencesSection(secretRefs: List<SecretDescriptor>) {
 private fun StoredCommandsSection(commands: List<String>) {
     val colors = BossTheme.colors
     val scroll = rememberScrollState()
+    val fontScale = LocalDensity.current.fontScale
     Spacer(modifier = Modifier.height(10.dp))
     Text(
         text =
@@ -704,6 +706,7 @@ private fun StoredCommandsSection(commands: List<String>) {
             Modifier
                 .fillMaxWidth()
                 .heightIn(max = STORED_COMMANDS_BOX_HEIGHT)
+                .testTag(STORED_COMMANDS_BOX_TAG)
                 .background(colors.raised, RoundedCornerShape(4.dp))
                 // Pinned visible when the list overflows the box, so text past the fold is never
                 // hidden without a sign. Gated on layout arithmetic, not on the scroll state, which
@@ -713,11 +716,14 @@ private fun StoredCommandsSection(commands: List<String>) {
                     direction = Orientation.Vertical,
                     config =
                         getPanelScrollbarConfig().copy(
-                            alpha = STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf { storedCommandsOverflow(commands) },
+                            alpha =
+                                STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf {
+                                    storedCommandsOverflow(commands, fontScale)
+                                },
                         ),
                 ).verticalScroll(scroll)
-                .padding(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+                .padding(STORED_COMMANDS_BOX_PADDING),
+        verticalArrangement = Arrangement.spacedBy(STORED_COMMAND_ENTRY_SPACING),
     ) {
         // Each shown through displayableStoredCommand, so one command is one entry whose visible
         // text is all of its text: no newline can split it into two, and no bidi or zero-width
@@ -752,11 +758,14 @@ private fun StoredCommandEntry(
                 .testTag(storedCommandEntryTag(index))
                 .background(colors.panel, RoundedCornerShape(3.dp))
                 .border(1.dp, colors.line, RoundedCornerShape(3.dp))
-                .padding(horizontal = 6.dp, vertical = 3.dp),
+                .padding(horizontal = 6.dp, vertical = STORED_COMMAND_ENTRY_PADDING),
     ) {
+        // An explicit line height on both texts, so storedCommandsOverflow's arithmetic is the
+        // height these actually take rather than whatever the theme's text style inherits.
         Text(
             text = "${index + 1}. $",
             fontSize = 12.sp,
+            lineHeight = STORED_COMMAND_LINE_HEIGHT,
             fontFamily = FontFamily.Monospace,
             color = colors.textSecondary,
             modifier = Modifier.padding(end = 6.dp),
@@ -764,6 +773,7 @@ private fun StoredCommandEntry(
         Text(
             text = displayableStoredCommand(command),
             fontSize = 12.sp,
+            lineHeight = STORED_COMMAND_LINE_HEIGHT,
             fontFamily = FontFamily.Monospace,
             color = colors.textPrimary,
             modifier = Modifier.weight(1f),
@@ -781,22 +791,43 @@ internal fun storedCommandsPlaceholderNote(placeholders: List<String>): String =
         " filled in when the Space opens, from the project it opens in" +
         (if ("{projectPath}" in placeholders) " ({projectPath} as one shell-quoted argument)." else ".")
 
+/** Test tag of the box the stored commands scroll in. */
+internal const val STORED_COMMANDS_BOX_TAG = "mcp-stored-commands-box"
+
 private val STORED_COMMANDS_BOX_HEIGHT = 120.dp
+private val STORED_COMMANDS_BOX_PADDING = 6.dp
+private val STORED_COMMAND_ENTRY_SPACING = 4.dp
+private val STORED_COMMAND_ENTRY_PADDING = 3.dp
+private val STORED_COMMAND_LINE_HEIGHT = 16.sp
 private const val STORED_COMMANDS_SCROLLBAR_ALPHA = 0.7f
 
 /**
- * Lines of 12sp monospace that fit the box, and characters per line. The dialog is a fixed 520dp,
- * which fits about 64 monospace characters; 48 leaves room for glyphs a fallback font draws wider
- * (CJK is two cells) and for a smaller density, so the count errs toward the bar being shown.
+ * Characters of 12sp monospace per line of a command. The dialog is a fixed 520dp, which fits
+ * about 64; the number column and the entry's own padding take some of that, and 42 leaves room
+ * for glyphs a fallback font draws wider (CJK is two cells), so the count errs toward more lines.
  */
-private const val STORED_COMMANDS_VISIBLE_LINES = 6
-private const val STORED_COMMANDS_CHARS_PER_LINE = 48
+private const val STORED_COMMANDS_CHARS_PER_LINE = 42
 
 /**
- * Whether the commands, as displayed, need more lines than the box shows. Arithmetic over the
- * text rather than a scroll-state read, so it is right on the first frame; it errs toward
- * showing the bar, which only costs a thumb on a list that just fits.
+ * Whether the commands, as displayed, are taller than the box shows. Arithmetic over the text
+ * and the entries' own chrome rather than a scroll-state read, so it is right on the first frame
+ * (see ToolLauncherDialog). Each entry is its lines at [STORED_COMMAND_LINE_HEIGHT], scaled by
+ * the user's [fontScale], plus its vertical padding; entries are [STORED_COMMAND_ENTRY_SPACING]
+ * apart; the box loses its own padding top and bottom. Counting text lines alone, as this used
+ * to, let five short entries scroll with no bar. Rounding errs toward showing the bar, which only
+ * costs a thumb on a list that just fits.
  */
-internal fun storedCommandsOverflow(commands: List<String>): Boolean =
-    commands.sumOf { (displayableStoredCommand(it).length + 8) / STORED_COMMANDS_CHARS_PER_LINE + 1 } >
-        STORED_COMMANDS_VISIBLE_LINES
+internal fun storedCommandsOverflow(
+    commands: List<String>,
+    fontScale: Float = 1f,
+): Boolean {
+    val lineHeight = STORED_COMMAND_LINE_HEIGHT.value * fontScale
+    val entries =
+        commands.sumOf { command ->
+            val chars = displayableStoredCommand(command).length
+            val lines = ((chars + STORED_COMMANDS_CHARS_PER_LINE - 1) / STORED_COMMANDS_CHARS_PER_LINE).coerceAtLeast(1)
+            (lines * lineHeight + 2 * STORED_COMMAND_ENTRY_PADDING.value).toDouble()
+        }
+    val spacing = STORED_COMMAND_ENTRY_SPACING.value * (commands.size - 1).coerceAtLeast(0)
+    return entries + spacing > STORED_COMMANDS_BOX_HEIGHT.value - 2 * STORED_COMMANDS_BOX_PADDING.value
+}

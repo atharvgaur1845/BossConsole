@@ -12,6 +12,9 @@ import ai.rever.boss.plugin.ui.LocalHeavyweightOverlays
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
@@ -210,6 +213,73 @@ class McpApprovalDialogStoredCommandsTest {
         assertTrue(storedCommandsOverflow(listOf("x".repeat(400))))
     }
 
+    @Test fun `five short commands overflow the box, counting each entry's chrome, and four fit`() {
+        // Each entry is a line plus its own padding, and entries are spaced apart: six text lines
+        // was the old gate's whole budget, and five one-line entries already overflow the box.
+        assertTrue(storedCommandsOverflow(List(5) { "npm run dev" }))
+        assertFalse(storedCommandsOverflow(List(4) { "npm run dev" }))
+        assertFalse(storedCommandsOverflow(listOf("cd ~/api && docker compose up -d", "npm run dev", "make watch")))
+    }
+
+    @Test fun `a larger font shows the bar sooner`() {
+        // Four fit at the default size; at 1.5x the same four do not.
+        assertFalse(storedCommandsOverflow(List(4) { "npm run dev" }, fontScale = 1f))
+        assertTrue(storedCommandsOverflow(List(4) { "npm run dev" }, fontScale = 1.5f))
+    }
+
+    @Test fun `the gate never says the list fits when the rendered entries run past the box`() {
+        // Measured against the real layout, not the arithmetic's own assumptions: for every list
+        // below, when the last entry's bottom lies past the box's inner edge the operator has text
+        // below the fold, and the gate must have pinned the bar.
+        val lists =
+            (1..8).map { n -> List(n) { "npm run dev $it" } } +
+                listOf(listOf("x".repeat(180)), listOf("y".repeat(300), "npm run dev"))
+        var commands by mutableStateOf(lists.first())
+        rule.setContent {
+            CompositionLocalProvider(
+                LocalHeavyweightOverlays provides true,
+                LocalDensity provides Density(1f),
+                LocalBossColors provides BossBlueprintColorScheme,
+                LocalWindowInfo provides
+                    object : WindowInfo {
+                        override val isWindowFocused = true
+                        override val containerSize = IntSize(720, 900)
+                    },
+            ) {
+                Box(Modifier.size(720.dp, 900.dp).clipToBounds()) {
+                    McpApprovalDialog(
+                        request =
+                            McpApprovalRequest(
+                                toolName = "open_workspace",
+                                providerId = "boss-workspace",
+                                arguments = mapOf("workspaceId" to "api-service"),
+                                timeoutMs = 45_000L,
+                                declaredReadOnly = false,
+                                storedCommands = commands,
+                            ),
+                        onApprove = { _, _, _ -> },
+                        onDeny = { _, _ -> },
+                    )
+                }
+            }
+        }
+        val underReported = mutableListOf<String>()
+        for (list in lists) {
+            commands = list
+            rule.waitForIdle()
+            val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
+            val last = rule.onNodeWithTag(storedCommandEntryTag(list.lastIndex)).fetchSemanticsNode()
+            // Unclipped: position plus size, not boundsInRoot, which the box clips.
+            val lastBottom = last.positionInRoot.y + last.size.height
+            val innerBottom = box.positionInRoot.y + box.size.height - STORED_COMMANDS_BOX_INNER_PADDING_PX
+            val overflows = lastBottom > innerBottom + 0.5f
+            if (overflows && !storedCommandsOverflow(list)) {
+                underReported += "${list.size} entries (${list.sumOf { it.length }} chars): $lastBottom > $innerBottom"
+            }
+        }
+        assertTrue(underReported.isEmpty(), "text below the fold with no bar:\n" + underReported.joinToString("\n"))
+    }
+
     /** The x at which [snippet] starts in the one node whose text contains it, and that node's line count. */
     private fun drawnAt(snippet: String): Pair<Float, Int> {
         val node = rule.onNodeWithText(snippet, substring = true)
@@ -220,6 +290,11 @@ class McpApprovalDialogStoredCommandsTest {
         val layout = layouts.single()
         return (semantics.boundsInRoot.left + layout.getHorizontalPosition(text.indexOf(snippet), true)) to
             layout.lineCount
+    }
+
+    private companion object {
+        /** The box's own padding, in px at the test's density of 1. */
+        const val STORED_COMMANDS_BOX_INNER_PADDING_PX = 6f
     }
 
     private fun captureLayout() {
