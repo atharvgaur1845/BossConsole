@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.mcp.secrets.SecretField
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -18,6 +19,21 @@ class McpArgumentSanitizerSecretReferenceTest {
         val content = "TOKEN={{secret:$id}}\nUSER={{secret:$id.username}}"
         val out = McpArgumentSanitizer.sanitize(mapOf("content" to content))
         assertEquals("TOKEN={{secret:$id}}\nUSER={{secret:$id.username}}", out["content"])
+    }
+
+    @Test
+    fun `every field a reference can name is kept alone and redacted when glued, whatever the enum grows to`() {
+        // Iterates the enum the parser resolves against, so a field added there is covered here
+        // without anyone remembering this test: the sanitizer's own pattern is built from the same
+        // entries, and this pins that it keeps being.
+        // Unmasked, a field would read `[REDACTED]}}` alone and leak `hunter2` glued after it.
+        for (field in SecretField.entries) {
+            val reference = "{{secret:$id.${field.wireName}}}"
+            val sanitize = McpArgumentSanitizer::sanitizeMessage
+            assertEquals("TOKEN=$reference", sanitize("TOKEN=$reference"), field.name)
+            assertEquals("[REDACTED]", sanitize("TOKEN=${reference}hunter2"), field.name)
+            assertEquals("[REDACTED]", sanitize("TOKEN=hunter2$reference"), field.name)
+        }
     }
 
     @Test

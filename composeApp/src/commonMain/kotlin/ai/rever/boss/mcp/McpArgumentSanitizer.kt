@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.mcp.secrets.SecretField
 import ai.rever.boss.plugin.logging.LogSanitizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -146,7 +147,10 @@ object McpArgumentSanitizer {
     private val validSecretReference =
         Regex(
             """\{\{secret:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}""" +
-                """(?:\.(?:password|username|notes))?\}\}""",
+                // From the enum the parser resolves against, not a copy of it: a field added there
+                // and missing here would not be masked, so `TOKEN={{secret:<id>.newfield}}suffix`
+                // would fall back to the pre-mask behaviour for exactly that field.
+                """(?:\.(?:${SecretField.entries.joinToString("|") { Regex.escape(it.wireName) }}))?\}\}""",
         )
 
     /**
