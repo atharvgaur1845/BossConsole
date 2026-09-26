@@ -227,18 +227,31 @@ class McpApprovalDialogStoredCommandsTest {
         assertTrue(storedCommandsOverflow(List(4) { "npm run dev" }, fontScale = 1.5f))
     }
 
-    @Test fun `the gate never says the list fits when the rendered entries run past the box`() {
-        // Measured against the real layout, not the arithmetic's own assumptions: for every list
-        // below, when the last entry's bottom lies past the box's inner edge the operator has text
-        // below the fold, and the gate must have pinned the bar.
-        val lists =
-            (1..8).map { n -> List(n) { "npm run dev $it" } } +
-                listOf(listOf("x".repeat(180)), listOf("y".repeat(300), "npm run dev"))
-        var commands by mutableStateOf(lists.first())
+    @Test fun `the bar is pinned whenever the rendered entries run past the box, however the text wraps`() {
+        // Checked against the real layout and the rendered decision, not the arithmetic's own
+        // assumptions: whenever the last entry's bottom lies past the box's inner edge the operator
+        // has text below the fold, and the box must have pinned its scrollbar.
+        val token = "abcdefghijklmnopqrstuvwxyz0123"
+        val cases =
+            (1..8).map { n -> List(n) { "npm run dev $it" } to 1f } +
+                listOf(
+                    listOf("x".repeat(180)) to 1f,
+                    listOf("y".repeat(300), "npm run dev") to 1f,
+                    // Word wrap: seven 30-character tokens wrap to seven lines where characters
+                    // per line counts six, so the arithmetic alone under-reports this one.
+                    listOf(List(7) { token }.joinToString(" ")) to 1f,
+                    listOf(List(7) { token }.joinToString(" "), "npm run dev") to 1f,
+                    // A larger font: fewer glyphs per line and taller lines than the arithmetic's
+                    // 42 characters assume.
+                    List(3) { "npm run dev --port 300$it --host 0.0.0.0" } to 1.5f,
+                    listOf(List(4) { token }.joinToString(" "), "make watch") to 1.3f,
+                )
+        var commands by mutableStateOf(cases.first().first)
+        var fontScale by mutableStateOf(1f)
         rule.setContent {
             CompositionLocalProvider(
                 LocalHeavyweightOverlays provides true,
-                LocalDensity provides Density(1f),
+                LocalDensity provides Density(1f, fontScale),
                 LocalBossColors provides BossBlueprintColorScheme,
                 LocalWindowInfo provides
                     object : WindowInfo {
@@ -263,9 +276,10 @@ class McpApprovalDialogStoredCommandsTest {
                 }
             }
         }
-        val underReported = mutableListOf<String>()
-        for (list in lists) {
+        val hidden = mutableListOf<String>()
+        for ((list, scale) in cases) {
             commands = list
+            fontScale = scale
             rule.waitForIdle()
             val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
             val last = rule.onNodeWithTag(storedCommandEntryTag(list.lastIndex)).fetchSemanticsNode()
@@ -273,11 +287,28 @@ class McpApprovalDialogStoredCommandsTest {
             val lastBottom = last.positionInRoot.y + last.size.height
             val innerBottom = box.positionInRoot.y + box.size.height - STORED_COMMANDS_BOX_INNER_PADDING_PX
             val overflows = lastBottom > innerBottom + 0.5f
-            if (overflows && !storedCommandsOverflow(list)) {
-                underReported += "${list.size} entries (${list.sumOf { it.length }} chars): $lastBottom > $innerBottom"
+            if (overflows && !box.config[StoredCommandsScrollbarPinned]) {
+                val chars = list.sumOf { it.length }
+                hidden += "${list.size} entries, $chars chars, font x$scale: $lastBottom > $innerBottom"
             }
         }
-        assertTrue(underReported.isEmpty(), "text below the fold with no bar:\n" + underReported.joinToString("\n"))
+        assertTrue(hidden.isEmpty(), "text below the fold with no bar:\n" + hidden.joinToString("\n"))
+    }
+
+    @Test fun `a list that fits pins no bar`() {
+        show(
+            McpApprovalRequest(
+                toolName = "open_workspace",
+                providerId = "boss-workspace",
+                arguments = mapOf("workspaceId" to "api-service"),
+                timeoutMs = 45_000L,
+                declaredReadOnly = false,
+                storedCommands = listOf("npm run dev", "make watch"),
+            ),
+        )
+        rule.waitForIdle()
+        val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
+        assertFalse(box.config[StoredCommandsScrollbarPinned])
     }
 
     /** The x at which [snippet] starts in the one node whose text contains it, and that node's line count. */
