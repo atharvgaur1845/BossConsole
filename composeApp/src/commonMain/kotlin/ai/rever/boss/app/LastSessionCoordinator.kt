@@ -131,14 +131,31 @@ class LastSessionCoordinator internal constructor(
      * @return true when this call performed the write.
      */
     fun saveOnProcessExit(): Boolean {
-        val entry =
-            if (writtenThisSession.get()) {
-                null
-            } else {
-                liveWindows.entries.firstOrNull { it.value.isPrimary } ?: liveWindows.entries.firstOrNull()
-            }
+        val entry = if (writtenThisSession.get()) null else recordOwner()
         return entry != null && writeLastSession(entry.key, entry.value, trigger = "process-exit")
     }
+
+    /**
+     * Whether [windowId] may keep the recovery files current during the session: it is the window
+     * a shutdown at this moment would write for, and no live window is protecting a refused
+     * restore.
+     *
+     * The layout watcher asks before every in-session write, so the files have ONE writer role
+     * during the session as well as at its end. Every window's watcher used to write
+     * `Last_Session.json`, so a secondary window's layout replaced the primary's crash-recovery
+     * copy - the #19 symptom by the in-session route. And the multi-Space set was written only
+     * here, at shutdown, so after a hard kill it described the clean shutdown BEFORE the session
+     * that crashed, and restore reads it first. The owner now writes the record and the set
+     * together, which is what this class does at shutdown too.
+     */
+    fun ownsSessionRecord(windowId: String): Boolean {
+        if (recoveryProtected.get() || liveWindows.values.any { !it.canSave() }) return false
+        return recordOwner()?.key == windowId
+    }
+
+    /** The primary window if it is still open, else any live window - the one a shutdown writes for. */
+    private fun recordOwner(): Map.Entry<String, LiveWindow>? =
+        liveWindows.entries.firstOrNull { it.value.isPrimary } ?: liveWindows.entries.firstOrNull()
 
     @Suppress("ReturnCount") // Refused restoration and an already-claimed write are independent guards.
     private fun writeLastSession(

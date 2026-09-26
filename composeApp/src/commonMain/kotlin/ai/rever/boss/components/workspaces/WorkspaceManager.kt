@@ -543,7 +543,10 @@ class WorkspaceManager(
      * The shutdown path's other half, beside [saveLastSessionBlocking], and blocking for the same
      * reason: a coroutine queued on `Dispatchers.Main` while the app is closing may never run.
      * Both are called under `LastSessionCoordinator`'s single claim, so the two files are written
-     * together by one window and cannot disagree about which session they describe.
+     * together by one window and cannot disagree about which session they describe. During the
+     * session the same window keeps both current through [saveLastSessionSet] (see
+     * `LastSessionCoordinator.ownsSessionRecord`), so a hard kill finds a set as fresh as the
+     * record rather than the one the previous clean shutdown left.
      *
      * The delete is not tidiness. Restore reads the set in preference to `Last_Session.json`, so a
      * set left behind by a three-Space session would reopen two Spaces after a session that had
@@ -562,6 +565,15 @@ class WorkspaceManager(
                 mapOf("spaces" to (set?.spaces?.size ?: 0).toString(), "removing" to (set == null).toString()),
             )
         }
+        return written
+    }
+
+    /**
+     * [saveLastSessionSetBlocking] off the caller's dispatcher, for the record owner's in-session
+     * write (`writeInSessionRecovery`), which runs from a window's layout watcher.
+     */
+    suspend fun saveLastSessionSet(set: LastSessionSet?): Boolean {
+        val written = withContext(Dispatchers.IO) { saveLastSessionSetBlocking(set) }
         return written
     }
 
