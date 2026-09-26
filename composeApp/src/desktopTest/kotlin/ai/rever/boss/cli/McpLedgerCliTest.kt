@@ -47,10 +47,11 @@ class McpLedgerCliTest {
         isError: Boolean = false,
         secretRefs: List<String> = emptyList(),
         escalated: Boolean = false,
+        providerId: String = "provider",
     ) {
         ledger.record(
             toolName = toolName,
-            providerId = "provider",
+            providerId = providerId,
             policyApplied = McpPolicyAction.ALLOW,
             approvalDisposition = disposition,
             durationMs = 7L,
@@ -383,5 +384,153 @@ class McpLedgerCliTest {
         assertEquals(0L, McpLedgerCli.parseTime("1970-01-01T00:00:00", endOfDay = false))
         assertNull(McpLedgerCli.parseTime("yesterday", endOfDay = false))
         assertNull(McpLedgerCli.parseTime("  ", endOfDay = false))
+    }
+
+    // ---- secrets: which tools received a credential, and when ------------------------------
+
+    private val secretA = "6f1d2c3e-4b5a-4c6d-8e7f-90a1b2c3d4e5"
+    private val secretB = "00000000-0000-4000-8000-000000000001"
+
+    /** Four calls naming secret A two ways, one naming B, one naming nothing. */
+    private fun secretLedger(): File {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file)
+        record(ledger, "open_terminal", McpApprovalDisposition.APPROVED_ONCE, secretRefs = listOf("$secretA.password"))
+        record(
+            ledger,
+            "open_terminal",
+            McpApprovalDisposition.SECRET_FORBIDDEN,
+            isError = true,
+            secretRefs = listOf("$secretA.password"),
+        )
+        record(
+            ledger,
+            "deploy",
+            McpApprovalDisposition.DENIED_BY_OPERATOR,
+            isError = true,
+            secretRefs = listOf("$secretA.username"),
+            providerId = "deployer",
+        )
+        // One call naming two fields of one secret is one call.
+        record(
+            ledger,
+            "login",
+            McpApprovalDisposition.CANCELLED_IN_FLIGHT,
+            isError = true,
+            secretRefs = listOf("$secretA.username", "$secretA.password"),
+        )
+        record(ledger, "run_command", McpApprovalDisposition.APPROVED_ONCE, secretRefs = listOf("$secretB.password"))
+        record(ledger, "list_files")
+        return file
+    }
+
+    private fun secretSummaries(json: String) =
+        Json
+            .parseToJsonElement(json)
+            .jsonObject
+            .getValue("secrets")
+            .jsonArray
+            .associateBy {
+                it.jsonObject
+                    .getValue("id")
+                    .jsonPrimitive.content
+            }.mapValues { it.value.jsonObject }
+
+    @Test
+    fun `secrets counts delivered and withheld apart, per secret, one call once`() {
+        val file = secretLedger()
+
+        val report = okText(McpLedgerSecrets.secrets(file.absolutePath, McpLedgerQuery(), json = true))
+        val summaries = secretSummaries(report)
+
+        assertEquals(setOf(secretA, secretB), summaries.keys)
+        val a = summaries.getValue(secretA)
+        assertEquals("4", a.getValue("calls").jsonPrimitive.content)
+        // Approved once, and cancelled after its handler had started: both handed the value over.
+        assertEquals("2", a.getValue("delivered").jsonPrimitive.content)
+        assertEquals("2", a.getValue("withheld").jsonPrimitive.content)
+        assertEquals(listOf("password", "username"), a.getValue("fields").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(setOf("open_terminal", "deploy", "login"), a.getValue("tools").jsonObject.keys)
+        assertEquals(
+            "2",
+            a
+                .getValue("tools")
+                .jsonObject
+                .getValue("open_terminal")
+                .jsonPrimitive.content,
+        )
+        assertEquals(
+            listOf("deployer", "provider"),
+            a.getValue("providers").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            "1",
+            summaries
+                .getValue(secretB)
+                .getValue("delivered")
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `a field selector counts that field's references only`() {
+        val file = secretLedger()
+
+        val query = McpLedgerQuery(secret = "$secretA.username")
+        val report = okText(McpLedgerSecrets.secrets(file.absolutePath, query, json = true))
+        val a = secretSummaries(report).getValue(secretA)
+
+        // The denied deploy and the cancelled login named the username; the approved call did not.
+        assertEquals("2", a.getValue("calls").jsonPrimitive.content)
+        assertEquals("1", a.getValue("delivered").jsonPrimitive.content)
+        assertEquals(listOf("username"), a.getValue("fields").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `search filters by secret, by field, and by provider`() {
+        val file = secretLedger()
+
+        val tools = { query: McpLedgerQuery ->
+            toolNames(okText(McpLedgerCli.search(file.absolutePath, 50, query, json = true)))
+        }
+
+        assertEquals(
+            listOf("login", "deploy", "open_terminal", "open_terminal"),
+            tools(McpLedgerQuery(secret = secretA)),
+        )
+        assertEquals(listOf("login", "deploy"), tools(McpLedgerQuery(secret = "$secretA.username")))
+        assertEquals(listOf("deploy"), tools(McpLedgerQuery(provider = "deployer")))
+        assertEquals(listOf("run_command"), tools(McpLedgerQuery(secret = secretB)))
+    }
+
+    @Test
+    fun `the human report says which secrets were delivered and never prints a value`() {
+        val file = secretLedger()
+
+        val text = okText(McpLedgerSecrets.secrets(file.absolutePath, McpLedgerQuery(secret = secretB), json = false))
+
+        assertTrue(text.startsWith(secretB), text)
+        assertTrue(text.contains("1 call(s): 1 delivered to a handler, 0 withheld"), text)
+        assertTrue(text.contains("tools:     run_command (1)"), text)
+        assertTrue(text.contains("no value is read or shown"), text)
+    }
+
+    @Test
+    fun `a secret selector must be an id, optionally with a field a reference can name`() {
+        assertEquals(secretA, McpLedgerSecrets.parseSelector(secretA.uppercase()))
+        assertEquals("$secretA.notes", McpLedgerSecrets.parseSelector(" $secretA.notes "))
+        assertNull(McpLedgerSecrets.parseSelector("github"))
+        assertNull(McpLedgerSecrets.parseSelector("$secretA.totp"))
+        assertNull(McpLedgerSecrets.parseSelector("$secretA."))
+    }
+
+    @Test
+    fun `no referenced secret is an answer, not an error`() {
+        val file = createTempLedgerFile()
+        record(McpOperationLedger(ledgerFile = file), "list_files")
+
+        val text = okText(McpLedgerSecrets.secrets(file.absolutePath, McpLedgerQuery(), json = false))
+
+        assertEquals("No matching ledger record references a secret.", text)
     }
 }
