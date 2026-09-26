@@ -2407,21 +2407,26 @@ to more than `MAX_STORED_COMMANDS_TOTAL_CHARS` (both caps measured on the text a
 one hidden code point is shown as up to ten characters), or a source that does not answer within
 `STORED_COMMANDS_PREVIEW_TIMEOUT_MS`. So is a command the argument sanitizer would change
 (`storedCommandShownInFull`): `export TOKEN="$(curl ... | sh)"` would be shown as
-`export [REDACTED]` and run in full, and the prompt exists so the operator reads what runs. A
-call refused there never reaches the secret pre-pass, so it reads nothing from the vault. The
-prompt is presented as #1624's escalated prompt (no durable allow; a durable deny stays
-available, and its wording names the commands rather than destructiveness), and YOLO mode does
-not answer it. Each command is shown through `displayableStoredCommand`, which walks code points
-and escapes by Unicode category (controls, format characters including the tag block, line and
-paragraph separators, private-use, unassigned) plus the invisible fillers and variation
-selectors, and sits in a bordered entry of its own with the number in a separate column, so a
-line that soft-wraps (a run of spaces pushing `2. $ curl ...` onto the next line) hangs inside
-its entry instead of reading as the next one. Keep it a category test: a range list goes out of
-date, and U+2028 was exactly such a gap, a mandatory line break that drew one command as two
-numbered entries. The box pins its scrollbar whenever the list runs past it, from two answers
-OR-ed: `storedCommandsOverflow`, arithmetic that is a LOWER bound on the height (at least a line
-per entry, at more characters per line than any monospace font fits), so it is right on the
-first frame whenever it says yes and never pins a bar over a list that fits; and the measured
+`export [REDACTED]` and run in full, and the prompt exists so the operator reads what runs. The
+masker matches inside a variable's name too (`export GITHUB_TOKEN=$GITHUB_TOKEN` shows as
+`export GITHUB_[REDACTED]`), so a Space with such a line is refused as well; the refusal names
+the command by number. A call refused there never reaches the secret pre-pass, so it reads
+nothing from the vault. The prompt is presented as #1624's escalated prompt (no durable allow; a
+durable deny stays available, and its wording names the commands rather than destructiveness),
+and YOLO mode does not answer it. Its ledger row still records `escalated: false`: that field
+keeps #1655's meaning (a destructive shell call raised to ASK), and a stored-command call is
+told apart by `policyApplied = ASK` and the `approvedStartupCommands` key it carries. Each
+command is shown through `displayableStoredCommand`, which walks code points and escapes by
+Unicode category (controls, format characters including the tag block, line and paragraph
+separators, private-use, unassigned) plus the invisible fillers and variation selectors, and
+sits in a bordered entry of its own with the number in a separate column, so a line that
+soft-wraps (a run of spaces pushing `2. $ curl ...` onto the next line) hangs inside its entry
+instead of reading as the next one. Keep it a category test: a range list goes out of date, and
+U+2028 was exactly such a gap, a mandatory line break that drew one command as two numbered
+entries. The box pins its scrollbar whenever the list runs past it, from two answers OR-ed:
+`storedCommandsOverflow`, arithmetic that is a LOWER bound on the height (at least a line per
+entry, at more characters per line than any monospace font fits), so it is right on the first
+frame whenever it says yes and never pins a bar over a list that fits; and the measured
 `ScrollState.maxValue`, with its `Int.MAX_VALUE` before-layout sentinel excluded. That is not
 the scroll-state read the tools-menu section forbids: the sentinel is never read as "scrolls",
 and the arithmetic owns the first frame, so a list only the measurement catches gets its bar one
