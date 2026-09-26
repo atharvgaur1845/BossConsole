@@ -157,10 +157,15 @@ internal fun McpToolArgs.withoutApprovedStoredCommands(): McpToolArgs {
     }
 }
 
-/** The argument tree with [APPROVED_STORED_COMMANDS_KEY] set to [commands], scalar map rebuilt. */
+/**
+ * The argument tree with [APPROVED_STORED_COMMANDS_KEY] set to [commands], scalar map rebuilt.
+ * Arguments that are not a JSON object come back unchanged, as [withoutApprovedStoredCommands]
+ * leaves them: there is no object to add the key to, and replacing them would discard what the
+ * agent sent. The handler then finds no approval, and refuses a Space that carries commands.
+ */
 internal fun McpToolArgs.withApprovedStoredCommands(commands: List<String>): McpToolArgs {
-    if (commands.isEmpty()) return this
-    val tree = parseObject(raw) ?: JsonObject(emptyMap())
+    val tree = if (commands.isEmpty()) null else parseObject(raw)
+    if (tree == null) return this
     val approved = JsonArray(commands.map { JsonPrimitive(it) })
     val rebuilt = JsonObject(tree + (APPROVED_STORED_COMMANDS_KEY to approved)).toString()
     return parseMcpToolArgs(rebuilt, storedCommandsLogger)

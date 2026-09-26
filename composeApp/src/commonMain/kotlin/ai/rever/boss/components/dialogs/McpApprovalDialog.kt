@@ -725,7 +725,10 @@ private fun StoredCommandsSection(commands: List<String>) {
                 // Pinned visible when the list overflows the box, so text past the fold is never
                 // hidden without a sign. The pinned bar appears at once: the panel default fades a
                 // bar in 1.5 s after the fact, which on a list only the measurement caught would
-                // leave the operator reading a box with no sign for the first two seconds.
+                // leave the operator reading a box with no sign for the first two seconds. Unpinned,
+                // the alpha is null even under "always show scrollbars", on purpose: the modifier has
+                // no fits-the-viewport guard, so honouring that setting here would paint a
+                // full-length thumb over a list that fits, which this gate exists to prevent.
                 .scrollbar(
                     scrollState = scroll,
                     direction = Orientation.Vertical,
