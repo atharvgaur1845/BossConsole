@@ -6,7 +6,7 @@
 -- it passes on a fresh `supabase db reset`. The key rolls back with the rest.
 
 begin;
-select plan(16);
+select plan(18);
 
 DO $fixture$
 DECLARE existing uuid;
@@ -21,8 +21,9 @@ END;
 $fixture$;
 
 -- ---------------------------------------------------------------------------
--- Fixtures: an org with an admin and a member, an outsider, and four secrets:
--- the member's personal one, the org's, the outsider's, and a corrupt one.
+-- Fixtures: an org with an admin and a member, an outsider, and five secrets:
+-- the member's personal one, the org's, the outsider's, a corrupt one, and one
+-- the outsider has shared with the member directly.
 -- ---------------------------------------------------------------------------
 insert into auth.users (id, email, email_confirmed_at) values
     ('61000000-0000-4000-8000-000000000001', 'byid-admin@pgtap.test',    now()),
@@ -47,7 +48,13 @@ insert into public.secrets (id, user_id, org_id, website, username, password_enc
     ('61000000-0000-4000-8000-000000000013', '61000000-0000-4000-8000-000000000003', NULL,
         'github.com', 'outsider', public.encrypt_text('pw-outsider'), NULL),
     ('61000000-0000-4000-8000-000000000014', '61000000-0000-4000-8000-000000000002', NULL,
-        'corrupt.example', 'member', 'not even base64!!', NULL);
+        'corrupt.example', 'member', 'not even base64!!', NULL),
+    ('61000000-0000-4000-8000-000000000015', '61000000-0000-4000-8000-000000000003', NULL,
+        'shared.example', 'outsider', public.encrypt_text('pw-shared'), NULL);
+
+insert into public.secret_shares (secret_id, shared_by, shared_with_user_id, access_level) values
+    ('61000000-0000-4000-8000-000000000015', '61000000-0000-4000-8000-000000000003',
+        '61000000-0000-4000-8000-000000000002', 'read');
 
 insert into public.secret_tags (secret_id, tag) values
     ('61000000-0000-4000-8000-000000000011', 'ai-provider'),
@@ -104,6 +111,16 @@ select is(
 select lives_ok(
     $$ select * from public.get_user_secret_by_id('61000000-0000-4000-8000-000000000014') $$,
     'a corrupt row does not abort the call');
+
+-- A share is not ownership. Asserted directly rather than through results_eq, which
+-- would stay green if the listing and this function ever widened to shares together.
+select is(
+    (select count(*) from public.get_user_secrets_with_shared()
+      where id = '61000000-0000-4000-8000-000000000015'),
+    1::bigint, 'the share is live: the share-aware listing shows it to the member');
+select is(
+    (select count(*) from public.get_user_secret_by_id('61000000-0000-4000-8000-000000000015')),
+    0::bigint, 'a secret merely shared with the caller is not resolved by id');
 
 -- ---------------------------------------------------------------------------
 -- As the outsider: the same ids, the other way round.

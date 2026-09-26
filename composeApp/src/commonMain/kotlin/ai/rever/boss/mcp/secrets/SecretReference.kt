@@ -98,6 +98,15 @@ enum class MalformedSecretReference(
     ),
     UNTERMINATED("the reference is not terminated with }}"),
     IN_JSON_KEY("a secret reference cannot be a JSON key"),
+    ;
+
+    /**
+     * The refusal the agent reads, which the ledger records as the call's error after running it
+     * through the argument sanitizer. It spells no reference syntax, so the sanitizer has nothing
+     * to rewrite and the two read the same: a `{{secret:...}}` placeholder here was recorded as
+     * `{{[REDACTED]}}`, telling an auditor a value had been there when none had.
+     */
+    val refusal: String get() = "Malformed secret reference: $text"
 }
 
 /**

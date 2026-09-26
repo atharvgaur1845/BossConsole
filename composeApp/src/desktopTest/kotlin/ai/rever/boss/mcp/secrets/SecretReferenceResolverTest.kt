@@ -1,6 +1,7 @@
 package ai.rever.boss.mcp.secrets
 
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -32,11 +33,17 @@ class SecretReferenceResolverTest {
         tags = tags,
     )
 
-    /** A vault that answers by id and remembers every id it was asked for, in order. */
+    /**
+     * A vault that answers by id and remembers every id it was asked for.
+     *
+     * The resolver reads concurrently, so the log is a concurrent collection and the assertions
+     * compare it as a multiset: which ids were read and how often, never in what order. The
+     * order is the dispatcher's, not the resolver's promise.
+     */
     private class Vault(
         private val records: List<SecretRecord>,
     ) : SecretLookup {
-        val asked = mutableListOf<String>()
+        val asked = ConcurrentLinkedQueue<String>()
 
         override suspend fun byId(id: String): Result<SecretRecord?> {
             asked += id
@@ -79,7 +86,8 @@ class SecretReferenceResolverTest {
             val refs = SecretField.entries.map { SecretReference(a, it) }.toSet() + passwordOf(b)
             val resolution = SecretReferenceResolver(vault).resolve(refs)
             assertIs<SecretResolution.Resolved>(resolution)
-            assertEquals(listOf(a, b), vault.asked, "one read per distinct id, three fields of a share one")
+            val reads = vault.asked.sorted()
+            assertEquals(listOf(a, b).sorted(), reads, "one read per distinct id, three fields of a share one")
         }
 
     @Test
@@ -93,7 +101,7 @@ class SecretReferenceResolverTest {
             assertIs<SecretResolution.Unresolved>(resolution)
             assertTrue(resolution.reason.contains(b))
             assertFalse(resolution.reason.contains("pw-"))
-            assertEquals(listOf(a, b), vault.asked)
+            assertEquals(listOf(a, b).sorted(), vault.asked.sorted())
         }
 
     @Test
@@ -198,6 +206,6 @@ class SecretReferenceResolverTest {
         runBlocking {
             val vault = Vault(emptyList())
             assertIs<SecretResolution.Resolved>(SecretReferenceResolver(vault).resolve(emptySet()))
-            assertEquals(emptyList(), vault.asked)
+            assertTrue(vault.asked.isEmpty())
         }
 }

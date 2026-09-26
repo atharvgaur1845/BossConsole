@@ -65,6 +65,34 @@ class McpArgumentSanitizerSecretReferenceTest {
     }
 
     @Test
+    fun `the doc's examples of a rule taking a reference along with its value hold`() {
+        // docs/MCP_SECRET_REFERENCES.md ("What the ledger records") gives these as examples of a
+        // reference recorded as [REDACTED]. That paragraph was wrong twice by claiming a closed
+        // set; this keeps the examples it does give true. A rule that learns to step around a
+        // mask fails here, and the doc should lose that example with it.
+        val reference = "{{secret:$id}}"
+        val redacted =
+            listOf(
+                """{"token":"$reference"}""",
+                "deploy --token $reference",
+                "curl -u deploy:$reference https://registry.example",
+                "curl --cookie $reference https://registry.example",
+                "Authorization: Bearer $reference",
+                "TOKEN=$reference{{secret:$id.username}}",
+                "TOKEN=${reference}hunter2",
+            )
+        for (text in redacted) {
+            val out = McpArgumentSanitizer.sanitizeMessage(text)
+            assertTrue(out.contains("[REDACTED]") && !out.contains(reference), "$text -> $out")
+        }
+        // And the ones it gives as staying legible: back to back after a key that is not
+        // sensitive, nothing runs into the mask.
+        for (text in listOf("TOKEN=$reference", "deploy --token=$reference", "A=$reference{{secret:$id.username}}")) {
+            assertEquals(text, McpArgumentSanitizer.sanitizeMessage(text))
+        }
+    }
+
+    @Test
     fun `plaintext glued after a reference is redacted with it`() {
         val out = McpArgumentSanitizer.sanitizeMessage("TOKEN={{secret:$id}}hunter2 next")
         assertFalse(out.contains("hunter2"), out)

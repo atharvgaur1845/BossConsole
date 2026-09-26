@@ -3,6 +3,7 @@ package ai.rever.boss.mcp.secrets
 import ai.rever.boss.mcp.McpApprovalBus
 import ai.rever.boss.mcp.McpApprovalDisposition
 import ai.rever.boss.mcp.McpApprovalRequest
+import ai.rever.boss.mcp.McpArgumentSanitizer
 import ai.rever.boss.mcp.McpOperationLedger
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpPolicyEngine
@@ -425,6 +426,35 @@ class SecretReferenceInvariantTest {
                 words.filter { snippet.contains(it) }.forEach { leaks += "$args -> ledger: '$it'" }
             }
             assertTrue(leaks.isEmpty(), leaks.joinToString("\n"))
+        }
+
+    @Test
+    fun `INV1 - the ledger records a malformed refusal exactly as the agent read it`() =
+        runBlocking {
+            // The refusal is host-authored, so the ledger's sanitizer has nothing to take out of
+            // it. A `{{secret:...}}` placeholder it did rewrite read `{{[REDACTED]}}` in the ledger,
+            // which tells an auditor a value was there when none was.
+            for (reason in MalformedSecretReference.entries) {
+                assertEquals(reason.refusal, McpArgumentSanitizer.sanitizeMessage(reason.refusal), reason.name)
+            }
+            val shapes =
+                listOf(
+                    """{"a":"{{secret:not-a-uuid}}"}""",
+                    """{"a":"{{secret:$id.totp}}"}""",
+                    """{"a":"{{secret:$id"}""",
+                    """{"{{secret:$id}}":"x"}""",
+                )
+            for (args in shapes) {
+                val h = Harness(CountingVault(listOf(record)))
+                h.register(tool("write") { McpToolResult("ran") })
+                val result = h.core.invoke("write", args)
+                val snippet =
+                    h.ledger.recentOperations.value
+                        .single()
+                        .errorSnippet
+                assertTrue(result.isError, args)
+                assertEquals(result.text, snippet, args)
+            }
         }
 
     @Test

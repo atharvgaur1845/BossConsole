@@ -168,17 +168,23 @@ readable.
 ## What the ledger records
 
 Each record gains `secretRefs`, a list of `<id>.<field>`. The `sanitizedArgs` field is built from
-the arguments the agent wrote, references intact; the substituted arguments never reach the
-ledger. In free text a reference stays legible there, because the argument sanitizer masks every
-valid reference before its redaction rules run and restores it afterwards; text glued to a
-reference (`TOKEN={{secret:<id>}}hunter2`) is redacted together with it. Two shapes still record
-`[REDACTED]` in place of the reference: a value under a key whose name marks it sensitive
-(`password`, `token`, `secret`, `auth`, ...), which the sanitizer blanks whole without reading it,
-and a quoted value inside a JSON string (`{"token":"{{secret:<id>}}"}`). Nothing is lost in either
-case: `secretRefs` records which secrets the call received independently of `sanitizedArgs`. A
-malformed reference is refused with an error that repeats nothing the agent wrote (only which rule
-failed), so a value pasted where the id belongs cannot reach the error text or the ledger's
-`errorSnippet`. Old records without the field decode with an empty default. Two new dispositions:
+the arguments the agent wrote, references intact; the substituted arguments never reach the ledger.
+In free text a reference usually stays legible there: the argument sanitizer masks every valid
+reference before its redaction rules run and restores it afterwards, and the `KEY=value` rule steps
+around a mask (`TOKEN={{secret:<id>}}`, `--token={{secret:<id>}}`). The other rules do not, so
+wherever a rule recognises a credential by the syntax around it, a reference in the value position
+is redacted along with that value. Some examples, and not a complete list: a value under a key
+whose name marks it sensitive (`password`, `token`, `secret`, `auth`, ...), which the sanitizer
+blanks whole without reading it; a quoted value inside a JSON string
+(`{"token":"{{secret:<id>}}"}`); a credential flag followed by a space (`--token {{secret:<id>}}`);
+`-u deploy:{{secret:<id>}}`; `--cookie {{secret:<id>}}`; an `Authorization:` or `Bearer` value; two
+references written back to back after a sensitive key (`TOKEN={{secret:<a>}}{{secret:<b>}}`); and
+text glued to a reference (`TOKEN={{secret:<id>}}hunter2`), which is redacted together with it.
+Nothing is lost in any of these: `secretRefs` records which secrets the call received independently
+of `sanitizedArgs`. A malformed reference is refused with an error that repeats nothing the agent
+wrote (only which rule failed), so a value pasted where the id belongs cannot reach the error text
+or the ledger's `errorSnippet`. Old records without the field decode with an empty default. Two new
+dispositions:
 
 - `SECRET_FORBIDDEN`: the host would not deliver (permission, policy, feature off, AI-provider key,
   or `secret.read` lost while the prompt was open).

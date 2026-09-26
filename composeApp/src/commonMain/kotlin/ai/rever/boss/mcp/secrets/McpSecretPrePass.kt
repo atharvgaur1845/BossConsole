@@ -101,10 +101,7 @@ internal class McpSecretPrePass(
                     // Nothing the agent wrote: this text reaches the agent and the ledger's
                     // errorSnippet, and the candidate is where a pasted value would sit (see
                     // SecretReferenceScan.Malformed). The reason alone says what to fix.
-                    return SecretPreparation.Refused(
-                        McpApprovalDisposition.SECRET_UNRESOLVED,
-                        "Malformed secret reference {{secret:...}}: ${scan.reason.text}",
-                    )
+                    return SecretPreparation.Refused(McpApprovalDisposition.SECRET_UNRESOLVED, scan.reason.refusal)
                 }
 
                 is SecretReferenceScan.Found -> {
@@ -145,7 +142,7 @@ internal class McpSecretPrePass(
         return resolve(references, arguments, scrub = config.resultScrubbingEnabled)
     }
 
-    /** Step 7 of [prepare]: the vault read, all or nothing, off the caller's dispatcher. */
+    /** Step 8 of [prepare]: the vault read, all or nothing, off the caller's dispatcher. */
     private suspend fun resolve(
         references: Set<SecretReference>,
         arguments: JsonObject,
