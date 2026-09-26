@@ -69,6 +69,12 @@ internal data class McpLedgerQuery(
  * [McpApprovalDisposition.POLICY_DENIED] or [McpApprovalDisposition.SECRET_FORBIDDEN] instead;
  * [McpApprovalDisposition.CANCELLED_IN_FLIGHT] is cancelled after the handler started, so it had the
  * value too.
+ *
+ * Legacy [McpApprovalDisposition.CANCELLED] is the one that cannot say which side it was on: it
+ * predates the split into awaiting-approval and in-flight (#430, 2026-09-09). No record this report
+ * counts should carry it, since `secretRefs` arrived later (#822, 2026-09-24) and nothing writes
+ * `CANCELLED` any more. Should one appear anyway, it counts as delivered: for a credential audit,
+ * reporting a possible delivery that did not happen is the safe mistake, and the reverse is not.
  */
 internal val McpApprovalDisposition.reachedHandler: Boolean
     get() =
@@ -81,6 +87,7 @@ internal val McpApprovalDisposition.reachedHandler: Boolean
             McpApprovalDisposition.PROVIDER_TRUST_PERSIST_FAILED,
             McpApprovalDisposition.YOLO_ALLOWED,
             McpApprovalDisposition.CANCELLED_IN_FLIGHT,
+            McpApprovalDisposition.CANCELLED,
             -> true
 
             McpApprovalDisposition.PERSISTENTLY_DENIED,
@@ -88,7 +95,6 @@ internal val McpApprovalDisposition.reachedHandler: Boolean
             McpApprovalDisposition.DENIED_BY_OPERATOR,
             McpApprovalDisposition.TIMEOUT,
             McpApprovalDisposition.POLICY_DENIED,
-            McpApprovalDisposition.CANCELLED,
             McpApprovalDisposition.CANCELLED_AWAITING_APPROVAL,
             McpApprovalDisposition.QUEUE_FULL,
             McpApprovalDisposition.INVALID_ARGUMENTS,
@@ -271,7 +277,13 @@ internal object McpLedgerCli {
                 query.category == null ||
                     (record.isError && record.approvalDisposition.unsuccessfulCategory == query.category)
             val toolMatches = query.tool == null || record.toolName == query.tool
-            val providerMatches = query.provider == null || record.providerId == query.provider
+            // A plugin's tools record `<pluginId>::<providerId>`, so the plugin id alone has to match
+            // every provider it registered: an audit that silently finds nothing for a plugin reads as
+            // "this plugin never received it".
+            val providerMatches =
+                query.provider == null ||
+                    record.providerId == query.provider ||
+                    record.providerId.substringBefore("::") == query.provider
             val secretMatches =
                 query.secret == null ||
                     record.secretRefs.any { McpLedgerSecrets.matches(it.lowercase(Locale.ROOT), query.secret) }
@@ -329,7 +341,7 @@ internal object McpLedgerSecrets {
                 if (json) {
                     McpLedgerFormat.secretUsesJson(ledgerFile, uses).toString()
                 } else {
-                    McpLedgerFormat.secretUses(uses)
+                    McpLedgerFormat.secretUses(ledgerFile, uses)
                 },
             )
         } catch (e: McpLedgerReadException) {
@@ -355,13 +367,15 @@ internal object McpLedgerSecrets {
             }
         }
         return byId
-            .map { (id, uses) ->
+            .map { (id, refs) ->
                 // One call referencing two fields of one secret is one call, not two.
-                val calls = uses.map { it.first }.distinctBy { it.id }
+                val calls = refs.map { it.first }.distinctBy { it.id }
                 val delivered = calls.filter { it.approvalDisposition.reachedHandler }
                 McpSecretUse(
                     id = id,
-                    fields = uses.map { it.second.substringAfter('.', "password") }.toSortedSet(),
+                    // `ledgerName` always writes `<id>.<field>`. A reference with no field names the
+                    // password, as `{{secret:<id>}}` does, so that is the field it is reported under.
+                    fields = refs.map { it.second.substringAfter('.', "password") }.toSortedSet(),
                     calls = calls.size,
                     delivered = delivered.size,
                     tools = calls.groupingBy { it.toolName }.eachCount().toSortedMap(),
@@ -552,8 +566,16 @@ internal object McpLedgerFormat {
 
     private fun policyOf(record: McpOperationRecord): String = "${record.policyApplied}/${record.approvalDisposition}"
 
-    fun secretUses(uses: List<McpSecretUse>): String {
-        if (uses.isEmpty()) return "No matching ledger record references a secret."
+    fun secretUses(
+        ledgerFile: File,
+        uses: List<McpSecretUse>,
+    ): String {
+        // Said on an empty report too: "nothing found" is the answer an operator rotating a
+        // credential acts on, and it only covers what rotation has kept.
+        val scope =
+            "\n\nLedger: ${ledgerFile.absolutePath} and its rotated backups. A use older than the oldest " +
+                "backup is not counted.\nRun `boss mcp ledger verify` to check that this history is intact."
+        if (uses.isEmpty()) return "No matching ledger record references a secret.$scope"
         val body =
             uses.joinToString("\n\n") { use ->
                 buildString {
@@ -563,13 +585,13 @@ internal object McpLedgerFormat {
                     append("\n  fields:    ").append(use.fields.joinToString())
                     append("\n  tools:     ")
                     append(use.tools.entries.joinToString { (tool, count) -> "$tool ($count)" })
-                    append("\n  plugins:   ").append(use.providers.joinToString())
+                    append("\n  providers: ").append(use.providers.joinToString())
                     append("\n  first:     ").append(timestamp(use.firstMillis))
                     append("\n  last:      ").append(timestamp(use.lastMillis))
                     append("\n  delivered: ").append(use.lastDeliveredMillis?.let(::timestamp) ?: "never")
                 }
             }
-        return body + "\n\n${uses.size} secret(s). Only references are recorded; no value is read or shown."
+        return body + "\n\n${uses.size} secret(s). Only references are recorded; no value is read or shown.$scope"
     }
 
     fun secretUsesJson(

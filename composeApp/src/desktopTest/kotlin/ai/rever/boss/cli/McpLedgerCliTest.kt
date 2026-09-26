@@ -12,6 +12,7 @@ import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -512,7 +513,58 @@ class McpLedgerCliTest {
         assertTrue(text.startsWith(secretB), text)
         assertTrue(text.contains("1 call(s): 1 delivered to a handler, 0 withheld"), text)
         assertTrue(text.contains("tools:     run_command (1)"), text)
+        // Provider ids, labelled as such: the JSON key says `providers` and a CLI cannot name plugins.
+        assertTrue(text.contains("providers: provider"), text)
         assertTrue(text.contains("no value is read or shown"), text)
+        // Which file it came from, how far back it reaches, and how to check it was not edited.
+        assertTrue(text.contains("Ledger: ${file.absolutePath} and its rotated backups"), text)
+        assertTrue(text.contains("older than the oldest backup is not counted"), text)
+        assertTrue(text.contains("boss mcp ledger verify"), text)
+    }
+
+    @Test
+    fun `a plugin id matches every provider the plugin registered, and a scoped id matches one`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file)
+        // How TrackingPluginContext records a plugin's tools: `<pluginId>::<providerId>`.
+        val calls =
+            listOf(
+                Triple("vault_get", "password", "secret-manager::vault"),
+                Triple("vault_list", "username", "secret-manager::index"),
+                Triple("open_terminal", "password", "boss-workspace"),
+            )
+        for ((tool, field, provider) in calls) {
+            val refs = listOf("$secretA.$field")
+            record(ledger, tool, McpApprovalDisposition.APPROVED_ONCE, secretRefs = refs, providerId = provider)
+        }
+
+        val tools = { provider: String ->
+            val query = McpLedgerQuery(provider = provider)
+            toolNames(okText(McpLedgerCli.search(file.absolutePath, 50, query, json = true)))
+        }
+        assertEquals(listOf("vault_list", "vault_get"), tools("secret-manager"))
+        assertEquals(listOf("vault_get"), tools("secret-manager::vault"))
+        assertEquals(listOf("open_terminal"), tools("boss-workspace"))
+        // A prefix of a plugin id is not the plugin.
+        assertEquals(emptyList<String>(), tools("secret"))
+
+        val plugin = McpLedgerQuery(provider = "secret-manager")
+        val report = okText(McpLedgerSecrets.secrets(file.absolutePath, plugin, json = true))
+        val a = secretSummaries(report).getValue(secretA)
+        assertEquals("2", a.getValue("delivered").jsonPrimitive.content)
+        assertEquals(
+            listOf("secret-manager::index", "secret-manager::vault"),
+            a.getValue("providers").jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun `a legacy CANCELLED record counts as a possible delivery`() {
+        // It predates the split into awaiting-approval and in-flight, so it cannot say whether the
+        // handler had the value. An audit that under-reports exposure is the wrong way to be wrong.
+        assertTrue(McpApprovalDisposition.CANCELLED.reachedHandler)
+        assertTrue(McpApprovalDisposition.CANCELLED_IN_FLIGHT.reachedHandler)
+        assertFalse(McpApprovalDisposition.CANCELLED_AWAITING_APPROVAL.reachedHandler)
     }
 
     @Test
@@ -531,6 +583,8 @@ class McpLedgerCliTest {
 
         val text = okText(McpLedgerSecrets.secrets(file.absolutePath, McpLedgerQuery(), json = false))
 
-        assertEquals("No matching ledger record references a secret.", text)
+        assertTrue(text.startsWith("No matching ledger record references a secret."), text)
+        // An empty answer is the one acted on, so it says how far back it looked as well.
+        assertTrue(text.contains("older than the oldest backup is not counted"), text)
     }
 }

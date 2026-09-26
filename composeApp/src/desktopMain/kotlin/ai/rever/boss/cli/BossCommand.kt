@@ -247,7 +247,10 @@ class BossMcpCommand : CliktCommand(name = "mcp") {
         "--secret",
         help = "Only calls that referenced this secret id, or <id>.<field> for one field",
     )
-    val ledgerProvider by option("--provider", help = "Only records from this exact provider (plugin) id")
+    val ledgerProvider by option(
+        "--provider",
+        help = "Only records from this provider: a host provider id, a plugin id, or <pluginId>::<providerId>",
+    )
     val ledgerFrom by option("--from", help = "Only records at or after this time (epoch ms, date, or ISO-8601)")
     val ledgerTo by option("--to", help = "Only records at or before this time (epoch ms, date, or ISO-8601)")
 
