@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -209,8 +210,19 @@ class McpApprovalDialogStoredCommandsTest {
         // "scrollable" for both of these (see ToolLauncherDialog in AGENTS.md).
         assertFalse(storedCommandsOverflow(listOf("npm run dev", "docker compose up -d")))
         assertTrue(storedCommandsOverflow(List(7) { "echo $it" }))
-        // One long command wraps past the box on its own.
-        assertTrue(storedCommandsOverflow(listOf("x".repeat(400))))
+        // One long command is past the box on its own, even at more characters per line than any
+        // line holds.
+        assertTrue(storedCommandsOverflow(listOf("x".repeat(700))))
+    }
+
+    @Test fun `the arithmetic is a lower bound, so it never counts a line the layout does not draw`() {
+        // Four 50-character commands draw one line each and fit; the old 42 characters per line
+        // counted two each and pinned a full-length thumb over a box with nothing to scroll.
+        assertFalse(storedCommandsOverflow(List(4) { "x".repeat(50) }))
+        // A combining mark draws on the glyph before it, so it is not a character of the line:
+        // 250 accented letters are 500 UTF-16 units, seven lines by that count and four by glyphs.
+        assertFalse(storedCommandsOverflow(listOf("e\u0301".repeat(250))))
+        assertTrue(storedCommandsOverflow(listOf("e".repeat(500))))
     }
 
     @Test fun `five short commands overflow the box, counting each entry's chrome, and four fit`() {
@@ -295,6 +307,80 @@ class McpApprovalDialogStoredCommandsTest {
         assertTrue(hidden.isEmpty(), "text below the fold with no bar:\n" + hidden.joinToString("\n"))
     }
 
+    @Test fun `with a fresh composition per list, the bar is pinned exactly when the entries run past the box`() {
+        // Both directions, each list in a composition of its own (`key`), so a scroll range left
+        // over from a larger list can neither pin a bar here nor hide one. The reverse direction
+        // is the one the gate's arithmetic used to fail: at 42 characters per line it pinned a
+        // full-length thumb over lists like the first two, which fit.
+        val token = "abcdefghijklmnopqrstuvwxyz0123"
+        val cases =
+            listOf(
+                List(4) { "x".repeat(50) } to 1f,
+                List(3) { "cd ~/services/api-gateway && docker compose up --build -d" } to 1f,
+                listOf("y".repeat(110), "npm run dev") to 1f,
+                List(4) { "npm run dev --port 300$it" } to 1f,
+                List(5) { "npm run dev --port 300$it" } to 1f,
+                listOf(List(7) { token }.joinToString(" ")) to 1f,
+                List(3) { "npm run dev" } to 1.3f,
+                List(4) { "npm run dev" } to 1.5f,
+                listOf("e\u0301".repeat(60), "make watch") to 1f,
+            )
+        var index by mutableStateOf(0)
+        var fontScale by mutableStateOf(1f)
+        rule.setContent {
+            CompositionLocalProvider(
+                LocalHeavyweightOverlays provides true,
+                LocalDensity provides Density(1f, fontScale),
+                LocalBossColors provides BossBlueprintColorScheme,
+                LocalWindowInfo provides
+                    object : WindowInfo {
+                        override val isWindowFocused = true
+                        override val containerSize = IntSize(720, 900)
+                    },
+            ) {
+                Box(Modifier.size(720.dp, 900.dp).clipToBounds()) {
+                    key(index) {
+                        McpApprovalDialog(
+                            request = storedCommandsRequest(cases[index].first),
+                            onApprove = { _, _, _ -> },
+                            onDeny = { _, _ -> },
+                        )
+                    }
+                }
+            }
+        }
+        val wrong = mutableListOf<String>()
+        var fitting = 0
+        for ((i, case) in cases.withIndex()) {
+            index = i
+            fontScale = case.second
+            rule.waitForIdle()
+            val overflows = rendersPastTheBox(case.first.lastIndex)
+            val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
+            val pinned = box.config[StoredCommandsScrollbarPinned]
+            if (!overflows) fitting++
+            if (pinned != overflows) wrong += "case $i (font x${case.second}): overflows=$overflows, pinned=$pinned"
+        }
+        assertTrue(wrong.isEmpty(), wrong.joinToString("\n"))
+        assertTrue(fitting >= 4, "only $fitting of the lists fit, so the reverse direction was barely tested")
+    }
+
+    @Test fun `a bar only the measurement finds is drawn at once, not faded in seconds later`() {
+        // Eight 40-character tokens: two cannot share a line in any monospace font, so they draw
+        // eight lines where the arithmetic's lower bound counts five. Only the measured range pins
+        // this one, and the panel's default fade would have kept the bar invisible for 1.5 s.
+        val token = "abcdefghijklmnopqrstuvwxyz0123456789abcd"
+        val commands = listOf(List(8) { token }.joinToString(" "))
+        assertFalse(storedCommandsOverflow(commands), "precondition: the arithmetic alone misses this list")
+        rule.mainClock.autoAdvance = false
+        show(storedCommandsRequest(commands))
+        // show() has advanced 250 ms: a few frames, far short of the fade's delay.
+        assertTrue(rendersPastTheBox(commands.lastIndex))
+        val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
+        assertTrue(box.config[StoredCommandsScrollbarPinned])
+        assertTrue(scrollbarDrawn(), "the box pinned its bar, but none is drawn 250 ms in")
+    }
+
     @Test fun `a list that fits pins no bar`() {
         show(
             McpApprovalRequest(
@@ -309,6 +395,36 @@ class McpApprovalDialogStoredCommandsTest {
         rule.waitForIdle()
         val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
         assertFalse(box.config[StoredCommandsScrollbarPinned])
+        assertFalse(scrollbarDrawn(), "a bar is drawn over a list that fits")
+    }
+
+    private fun storedCommandsRequest(commands: List<String>) =
+        McpApprovalRequest(
+            toolName = "open_workspace",
+            providerId = "boss-workspace",
+            arguments = mapOf("workspaceId" to "api-service"),
+            timeoutMs = 45_000L,
+            declaredReadOnly = false,
+            storedCommands = commands,
+        )
+
+    /** Whether the entry at [lastIndex] ends past the box's inner edge: text below the fold. */
+    private fun rendersPastTheBox(lastIndex: Int): Boolean {
+        val box = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).fetchSemanticsNode()
+        val last = rule.onNodeWithTag(storedCommandEntryTag(lastIndex)).fetchSemanticsNode()
+        // Unclipped: position plus size, not boundsInRoot, which the box clips.
+        val lastBottom = last.positionInRoot.y + last.size.height
+        val innerBottom = box.positionInRoot.y + box.size.height - STORED_COMMANDS_BOX_INNER_PADDING_PX
+        return lastBottom > innerBottom + 0.5f
+    }
+
+    /**
+     * Whether a scrollbar is drawn in the box: the pixels where the thumb goes, at the top of the
+     * right-hand padding strip, differ from the box's own background in the left-hand one.
+     */
+    private fun scrollbarDrawn(): Boolean {
+        val pixels = rule.onNodeWithTag(STORED_COMMANDS_BOX_TAG).captureToImage().toPixelMap()
+        return pixels[pixels.width - 3, 10] != pixels[3, pixels.height / 2]
     }
 
     /** The x at which [snippet] starts in the one node whose text contains it, and that node's line count. */

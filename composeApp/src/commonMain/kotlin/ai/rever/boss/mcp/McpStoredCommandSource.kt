@@ -56,7 +56,8 @@ internal const val STORED_COMMANDS_PREVIEW_TIMEOUT_MS: Long = 10_000L
 /**
  * The longest stored command that can be shown for approval; a longer one refuses the call
  * before any prompt rather than being truncated in the dialog, since an operator cannot approve
- * text they were not shown.
+ * text they were not shown. Measured on the text as shown ([displayableStoredCommand]), where one
+ * hidden code point takes up to ten characters, because what it bounds is what the operator reads.
  */
 internal const val MAX_STORED_COMMAND_CHARS: Int = 4096
 
@@ -64,7 +65,7 @@ internal const val MAX_STORED_COMMAND_CHARS: Int = 4096
  * The most text all of one call's stored commands may add up to. The per-command cap alone would
  * still let [MAX_STORED_COMMANDS_PER_CALL] commands of [MAX_STORED_COMMAND_CHARS] each reach a
  * six-line box, and the reason for the per-command cap - an operator cannot approve what they
- * will not read - applies to the total just as much.
+ * will not read - applies to the total just as much. Measured as shown, like the per-command cap.
  */
 internal const val MAX_STORED_COMMANDS_TOTAL_CHARS: Int = 16_384
 

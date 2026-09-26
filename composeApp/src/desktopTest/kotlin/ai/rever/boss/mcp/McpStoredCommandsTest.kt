@@ -253,6 +253,33 @@ class McpStoredCommandsTest {
         }
 
     @Test
+    fun `the caps count what the operator reads, not the characters stored`() =
+        runBlocking {
+            // A zero-width space is one character stored and eight shown (`\u{200B}`), so these are
+            // well under both caps as stored and over them as shown.
+            val hidden = "\u200B"
+            val one = "echo " + hidden.repeat(MAX_STORED_COMMAND_CHARS / 8 + 1)
+            assertTrue(one.length < MAX_STORED_COMMAND_CHARS)
+            val each = "echo " + hidden.repeat(MAX_STORED_COMMAND_CHARS / 8 - 1)
+            val many = List(MAX_STORED_COMMANDS_TOTAL_CHARS / MAX_STORED_COMMAND_CHARS + 1) { each }
+            assertTrue(many.sumOf { it.length } < MAX_STORED_COMMANDS_TOTAL_CHARS)
+            val cases =
+                listOf(
+                    listOf("npm install", one) to
+                        "Stored command 2 is longer than $MAX_STORED_COMMAND_CHARS characters as shown",
+                    many to "$MAX_STORED_COMMANDS_TOTAL_CHARS characters of stored commands as shown",
+                )
+            for ((commands, cap) in cases) {
+                val h = Harness { commands }
+                val result = h.core.invoke("apply", """{"id":"x"}""")
+                assertTrue(result.isError)
+                assertTrue(result.text.contains(cap), result.text)
+                assertTrue(h.seen.isEmpty())
+                assertNull(h.provider.received)
+            }
+        }
+
+    @Test
     fun `a call the stored-command preview refused never reaches the secret pre-pass`() =
         runBlocking {
             val h = Harness { error("file unreadable") }
@@ -383,6 +410,8 @@ class McpStoredCommandsTest {
                 op.cancel()
                 assertTrue(result.isError, command)
                 assertTrue(result.text.contains("cannot be shown in full for approval"), result.text)
+                // Which one, by number: that discloses no text and says what to fix.
+                assertTrue(result.text.startsWith("Stored command 2 "), result.text)
                 assertTrue(h.seen.isEmpty(), "no prompt for: $command")
                 assertNull(h.provider.received, "the handler ran for: $command")
             }

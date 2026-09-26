@@ -1182,25 +1182,30 @@ internal class McpToolRegistryCore(
                     "can be shown for approval. Open the Space through the workspace UI instead.",
             )
         }
-        if (commands.any { it.length > MAX_STORED_COMMAND_CHARS }) {
+        // Measured as the dialog shows them, not as stored: one hidden code point is shown as up
+        // to ten characters (`\u{E0041}`), and the caps exist to bound what the operator reads.
+        val shownLengths = commands.map { displayableStoredCommand(it).length }
+        val tooLong = shownLengths.indexOfFirst { it > MAX_STORED_COMMAND_CHARS }
+        if (tooLong >= 0) {
             return StoredCommandsPreview(
                 emptyList(),
-                "A stored command is longer than $MAX_STORED_COMMAND_CHARS characters and cannot be shown in full " +
-                    "for approval. Open the Space through the workspace UI instead.",
+                "Stored command ${tooLong + 1} is longer than $MAX_STORED_COMMAND_CHARS characters as shown and " +
+                    "cannot be shown in full for approval. Open the Space through the workspace UI instead.",
             )
         }
-        if (commands.sumOf { it.length } > MAX_STORED_COMMANDS_TOTAL_CHARS) {
+        if (shownLengths.sum() > MAX_STORED_COMMANDS_TOTAL_CHARS) {
             return StoredCommandsPreview(
                 emptyList(),
-                "This call would run more than $MAX_STORED_COMMANDS_TOTAL_CHARS characters of stored commands, " +
-                    "more than can be shown for approval. Open the Space through the workspace UI instead.",
+                "This call would run more than $MAX_STORED_COMMANDS_TOTAL_CHARS characters of stored commands as " +
+                    "shown, more than can be shown for approval. Open the Space through the workspace UI instead.",
             )
         }
-        if (!commands.all(::storedCommandShownInFull)) {
+        val masked = commands.indexOfFirst { !storedCommandShownInFull(it) }
+        if (masked >= 0) {
             return StoredCommandsPreview(
                 emptyList(),
-                "A stored command contains text the host masks as a credential, so it cannot be shown in full " +
-                    "for approval. Open the Space through the workspace UI instead.",
+                "Stored command ${masked + 1} contains text the host masks as a credential, so it cannot be shown " +
+                    "in full for approval. Open the Space through the workspace UI instead.",
             )
         }
         return StoredCommandsPreview(commands)
