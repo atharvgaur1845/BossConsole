@@ -848,9 +848,11 @@ internal fun BossAppStartupEffects(state: BossAppState) {
                         )
                     workspaceManager.updateCurrentWorkspace(write.current)
                     // The recovery files come from the session record's owner only, and as a pair.
-                    writeInSessionRecovery(windowId, write.record, set = {
-                        liveSessionSet(splitViewState, selectedProject.path, defaultWorkingDirectory)
-                    })
+                    writeInSessionRecovery(
+                        windowId = windowId,
+                        record = write.record,
+                        set = { liveSessionSet(splitViewState, selectedProject.path, defaultWorkingDirectory) },
+                    )
                 }
         }.launchIn(this)
 

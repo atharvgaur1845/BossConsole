@@ -10,16 +10,22 @@ import ai.rever.boss.components.workspaces.isRestorable
 import ai.rever.boss.plugin.workspace.PanelConfig
 import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.plugin.workspace.TabConfig
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -31,10 +37,14 @@ import kotlin.test.assertTrue
  * killed, the next launch brought back the clean shutdown BEFORE it and the watcher wrote those
  * older layouts over the fresh record. And every window's watcher wrote the record, so a secondary
  * window's layout could replace the primary's. [writeInSessionRecovery] is the watcher's write:
- * the session record's owner keeps both files current, and no other window writes either.
+ * the session record's owner keeps both files current, as one uninterruptible pair that cannot
+ * interleave with the shutdown write, and no other window writes either.
  *
  * Each "session" is its own [WorkspaceManager] over one directory, which is what a process restart
- * is to these files.
+ * is to these files, and the coordinator is wired to it the way `LastSessionCoordinator.instance`
+ * is wired to the app's. What is NOT asserted here is the seam in `BossAppStartupEffects`: that
+ * the watcher passes the same window id the window registered with. Both are the one `windowId`
+ * local of one composable, so it is checked by reading rather than by a test.
  */
 class InSessionRecoveryTest {
     private val dirs = mutableListOf<File>()
@@ -93,10 +103,63 @@ class InSessionRecoveryTest {
             .title
     }
 
-    private fun coordinator(vararg windows: Pair<String, Boolean>) =
-        LastSessionCoordinator(save = { true }).also { coordinator ->
-            windows.forEach { (id, primary) -> coordinator.register(id, primary) { record("unused") } }
+    /**
+     * Records the order the recovery files are written in, and holds the FIRST write that reaches
+     * it until [release] - which is how a test stands in the middle of a pair.
+     */
+    private class Gate(
+        held: Boolean,
+    ) {
+        val order = CopyOnWriteArrayList<String>()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(if (held) 1 else 0)
+        private val first = AtomicBoolean(true)
+
+        fun pass(file: String) {
+            order += file
+            if (first.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS)) { "the held write was never released" }
+            }
         }
+    }
+
+    /** The coordinator as `LastSessionCoordinator.instance` wires it, over [manager]. */
+    private fun wired(
+        manager: WorkspaceManager,
+        gate: Gate = Gate(held = false),
+    ) = LastSessionCoordinator(
+        save = {
+            gate.pass("shutdown record")
+            manager.saveLastSessionBlocking(it)
+        },
+        saveSet = {
+            gate.pass("set")
+            manager.saveLastSessionSetBlocking(it)
+        },
+        saveRecord = {
+            gate.pass("record")
+            manager.writeLastSessionRecordBlocking(it)
+        },
+    )
+
+    private fun LastSessionCoordinator.window(
+        id: String,
+        primary: Boolean,
+    ) = apply { register(id, primary) { record("unused") } }
+
+    /** Waits until [thread] is blocked on a monitor inside the coordinator, or has finished. */
+    private fun awaitBlockedInCoordinatorOrDone(thread: Thread) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+
+        fun blockedInCoordinator() =
+            thread.state == Thread.State.BLOCKED &&
+                thread.stackTrace.any { it.className == LastSessionCoordinator::class.java.name }
+        while (thread.state != Thread.State.TERMINATED && !blockedInCoordinator()) {
+            check(System.nanoTime() < deadline) { "the shutdown write neither waited nor finished" }
+            Thread.onSpinWait()
+        }
+    }
 
     @Test
     fun `the owner keeps the set as fresh as the record, so a kill restores the session that died`() =
@@ -112,7 +175,7 @@ class InSessionRecoveryTest {
                     windowId = "primary",
                     record = record(tab = "new a"),
                     set = { set("b" to "new b", "a" to "new a") },
-                    coordinator = coordinator("primary" to true),
+                    coordinator = wired(second).window("primary", primary = true),
                     manager = second,
                 )
             assertTrue(wrote)
@@ -128,14 +191,15 @@ class InSessionRecoveryTest {
         runBlocking<Unit> {
             val dir = directory()
             cleanShutdown(dir)
+            val manager = session(dir)
 
             val wrote =
                 writeInSessionRecovery(
                     windowId = "secondary",
                     record = record(tab = "secondary layout"),
                     set = { error("a window that does not own the record must not even build a set") },
-                    coordinator = coordinator("primary" to true, "secondary" to false),
-                    manager = session(dir),
+                    coordinator = wired(manager).window("primary", primary = true).window("secondary", primary = false),
+                    manager = manager,
                 )
 
             assertFalse(wrote)
@@ -148,32 +212,52 @@ class InSessionRecoveryTest {
     fun `once the primary has closed, the window a shutdown would write for owns the record`() =
         runBlocking<Unit> {
             val dir = directory()
-            val coordinator = coordinator("primary" to true, "secondary" to false)
+            val manager = session(dir)
+            val coordinator = wired(manager).window("primary", primary = true).window("secondary", primary = false)
             assertFalse(coordinator.onWindowDisposed("primary"), "a close with another window open writes nothing")
 
             assertTrue(coordinator.ownsSessionRecord("secondary"))
-            assertTrue(
-                writeInSessionRecovery("secondary", record("second"), { null }, coordinator, session(dir)),
-            )
+            assertTrue(writeInSessionRecovery("secondary", record("second"), { null }, coordinator, manager))
+            assertEquals("second", recordedTitle(session(dir)))
         }
 
     @Test
-    fun `nobody writes while a live window is protecting a refused restore`() {
-        val coordinator = LastSessionCoordinator(save = { true })
-        coordinator.register("primary", isFirstWindow = true, canSave = { false }) { record("unused") }
-        coordinator.register("secondary", isFirstWindow = false) { record("unused") }
+    fun `nobody writes while a live window is protecting a refused restore`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            cleanShutdown(dir)
+            val manager = session(dir)
+            val coordinator = wired(manager)
+            coordinator.register("primary", isFirstWindow = true, canSave = { false }) { record("unused") }
+            coordinator.window("secondary", primary = false)
 
-        assertFalse(coordinator.ownsSessionRecord("primary"))
-        assertFalse(coordinator.ownsSessionRecord("secondary"))
-    }
+            for (window in listOf("primary", "secondary")) {
+                assertFalse(coordinator.ownsSessionRecord(window))
+                val wrote =
+                    writeInSessionRecovery(
+                        windowId = window,
+                        record = record(tab = "$window layout"),
+                        set = { error("no window may build a set while the restore is protected") },
+                        coordinator = coordinator,
+                        manager = manager,
+                    )
+                assertFalse(wrote)
+            }
+
+            val next = session(dir)
+            assertEquals(listOf("old b", "old a"), titles(next.loadLastSessionSet()))
+            assertEquals("old a", recordedTitle(next))
+        }
 
     @Test
     fun `a window no longer running two Spaces removes the earlier set instead of letting it outrank the record`() =
         runBlocking<Unit> {
             val dir = directory()
             cleanShutdown(dir)
+            val manager = session(dir)
 
-            writeInSessionRecovery("primary", record("only a"), { null }, coordinator("primary" to true), session(dir))
+            val coordinator = wired(manager).window("primary", primary = true)
+            writeInSessionRecovery("primary", record("only a"), { null }, coordinator, manager)
 
             val next = session(dir)
             assertNull(next.loadLastSessionSet())
@@ -181,13 +265,81 @@ class InSessionRecoveryTest {
         }
 
     @Test
-    fun `a kill before any in-session write still restores every Space from the set`() =
+    fun `closing the window part-way through the pair still lands both files, the set first`() =
         runBlocking<Unit> {
             val dir = directory()
             cleanShutdown(dir)
+            val manager = session(dir)
+            val gate = Gate(held = true)
+            val coordinator = wired(manager, gate).window("primary", primary = true)
 
-            // Session 2 restores and is killed before its watcher has written anything.
-            val set = assertNotNull(session(dir).loadLastSessionSet())
-            assertEquals(listOf("old b", "old a"), titles(set))
+            // The window closes while its watcher is writing: Compose cancels the watcher before
+            // the coordinator hears of the close, so the cancellation lands between the two files.
+            val watcher =
+                launch(Dispatchers.Default) {
+                    val live = set("b" to "new b", "a" to "new a")
+                    writeInSessionRecovery("primary", record("new a"), { live }, coordinator, manager)
+                }
+            assertTrue(gate.entered.await(10, TimeUnit.SECONDS), "the watcher never started its pair")
+            watcher.cancel()
+            gate.release.countDown()
+            watcher.join()
+
+            // Both halves landed. The set went first, so even a kill between the two would have
+            // left the file restore prefers fresh, rather than a fresh record beside a stale set.
+            assertEquals(listOf("set", "record"), gate.order)
+            val next = session(dir)
+            assertEquals(listOf("new b", "new a"), titles(next.loadLastSessionSet()))
+            assertEquals("new a", recordedTitle(next))
+        }
+
+    @Test
+    fun `an in-session write that arrives after the shutdown write adds nothing`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            val manager = session(dir)
+            val coordinator = wired(manager)
+            // The user closed a Space and quit, so the shutdown write deletes the set.
+            coordinator.register("primary", isFirstWindow = true, extractSet = { null }) { record("at exit") }
+            assertTrue(coordinator.saveOnProcessExit())
+
+            val live = set("b" to "late b", "a" to "late a")
+            val wrote = writeInSessionRecovery("primary", record("late"), { live }, coordinator, manager)
+
+            assertFalse(wrote)
+            val next = session(dir)
+            assertNull(next.loadLastSessionSet(), "the set the shutdown deleted must stay deleted")
+            assertEquals("at exit", recordedTitle(next))
+        }
+
+    @Test
+    fun `a shutdown that arrives mid-pair waits for it, then writes over it`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            val manager = session(dir)
+            val gate = Gate(held = true)
+            val coordinator = wired(manager, gate)
+            coordinator.register("primary", isFirstWindow = true, extractSet = { null }) { record("at exit") }
+
+            val watcher =
+                launch(Dispatchers.Default) {
+                    val live = set("b" to "settled b", "a" to "settled a")
+                    writeInSessionRecovery("primary", record("settled"), { live }, coordinator, manager)
+                }
+            assertTrue(gate.entered.await(10, TimeUnit.SECONDS), "the watcher never started its pair")
+
+            // Cmd+Q now: the shutdown hook runs on its own thread while the watcher is mid-pair.
+            val hookWrote = AtomicBoolean(false)
+            val hook = thread { hookWrote.set(coordinator.saveOnProcessExit()) }
+            awaitBlockedInCoordinatorOrDone(hook)
+            gate.release.countDown()
+            watcher.join()
+            hook.join()
+
+            assertTrue(hookWrote.get())
+            assertEquals(listOf("set", "record", "shutdown record", "set"), gate.order)
+            val next = session(dir)
+            assertNull(next.loadLastSessionSet(), "the watcher's set must not land after the shutdown deleted it")
+            assertEquals("at exit", recordedTitle(next))
         }
 }

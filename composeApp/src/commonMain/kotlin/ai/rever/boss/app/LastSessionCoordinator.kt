@@ -47,6 +47,12 @@ class LastSessionCoordinator internal constructor(
      * that only cares about who writes does not have to say anything about the set.
      */
     private val saveSet: (LastSessionSet?) -> Boolean = { true },
+    /**
+     * Write the layout watcher's record as it is, for [writeInSession]. Not [save]: that one stamps
+     * the record and makes it the manager's current workspace, which mid-session would rename the
+     * Space the user is working in (see `WorkspaceManager.writeLastSessionRecordBlocking`).
+     */
+    private val saveRecord: (LayoutWorkspace) -> Boolean = { true },
 ) {
     private val logger = BossLogger.forComponent("LastSessionCoordinator")
 
@@ -63,6 +69,10 @@ class LastSessionCoordinator internal constructor(
     // A refused startup restore protects the recovery files for this process, even if the
     // primary window closes before a secondary one. Opening another window cannot clear it.
     private val recoveryProtected = AtomicBoolean(false)
+
+    // Held by the shutdown write and the owner's in-session write, so neither can land a file in
+    // the middle of the other's pair. See [writeInSession].
+    private val writeLock = Any()
 
     /** Number of windows currently registered. */
     val liveWindowCount: Int
@@ -147,17 +157,49 @@ class LastSessionCoordinator internal constructor(
      * here, at shutdown, so after a hard kill it described the clean shutdown BEFORE the session
      * that crashed, and restore reads it first. The owner now writes the record and the set
      * together, which is what this class does at shutdown too.
+     *
+     * "Protecting a refused restore" reaches a little further than the words: a window that
+     * closes before its own restore has finished latches the same protection, because `canSave`
+     * cannot tell "refused" from "not finished yet". From then on no window writes either file
+     * in-session for the rest of the process, exactly as the shutdown write already refuses to.
      */
     fun ownsSessionRecord(windowId: String): Boolean {
         if (recoveryProtected.get() || liveWindows.values.any { !it.canSave() }) return false
         return recordOwner()?.key == windowId
     }
 
+    /**
+     * The record owner's in-session write: [set] and then [record], and whether the record landed.
+     * False without writing anything when [windowId] no longer owns the record or the shutdown
+     * write has already happened.
+     *
+     * The set goes first. Restore reads it in preference to the record, so if the pair is ever cut
+     * short, by a kill between the two writes, the file that landed is the one restore reads.
+     *
+     * Under [writeLock], which [writeLastSession] holds too. The shutdown hook runs on its own
+     * thread while every window's watcher is still alive, so without the lock a watcher part-way
+     * through its pair could land its second file after the hook had written both: a set from one
+     * moment beside a record from another, and, when the user had just closed a Space and quit, the
+     * set the hook deleted written back. Asking again inside the lock means a watcher that arrives
+     * after the shutdown write adds nothing, and one that arrives first finishes before the hook
+     * writes over it.
+     */
+    fun writeInSession(
+        windowId: String,
+        record: LayoutWorkspace,
+        set: LastSessionSet?,
+    ): Boolean {
+        synchronized(writeLock) {
+            if (writtenThisSession.get() || !ownsSessionRecord(windowId)) return false
+            saveSet(set)
+            return saveRecord(record)
+        }
+    }
+
     /** The primary window if it is still open, else any live window - the one a shutdown writes for. */
     private fun recordOwner(): Map.Entry<String, LiveWindow>? =
         liveWindows.entries.firstOrNull { it.value.isPrimary } ?: liveWindows.entries.firstOrNull()
 
-    @Suppress("ReturnCount") // Refused restoration and an already-claimed write are independent guards.
     private fun writeLastSession(
         windowId: String,
         window: LiveWindow,
@@ -167,6 +209,15 @@ class LastSessionCoordinator internal constructor(
         // restoration while a secondary is the last disposer or the shutdown-hook candidate.
         if (!window.canSave() || liveWindows.values.any { !it.canSave() }) recoveryProtected.set(true)
         if (recoveryProtected.get()) return false
+        // The owner's in-session write takes the same lock; see [writeInSession].
+        return synchronized(writeLock) { claimAndWrite(windowId, window, trigger) }
+    }
+
+    private fun claimAndWrite(
+        windowId: String,
+        window: LiveWindow,
+        trigger: String,
+    ): Boolean {
         // Claim the write before doing it: the dispose path and the shutdown hook
         // can run concurrently (a hook fires while Compose is still tearing down).
         if (!writtenThisSession.compareAndSet(false, true)) return false
@@ -209,6 +260,7 @@ class LastSessionCoordinator internal constructor(
             LastSessionCoordinator(
                 save = { layout -> workspaceManager.saveLastSessionBlocking(layout) },
                 saveSet = { set -> workspaceManager.saveLastSessionSetBlocking(set) },
+                saveRecord = { record -> workspaceManager.writeLastSessionRecordBlocking(record) },
             )
     }
 }
