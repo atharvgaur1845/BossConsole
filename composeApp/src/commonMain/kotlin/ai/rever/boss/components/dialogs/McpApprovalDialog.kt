@@ -63,6 +63,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -691,6 +693,12 @@ private fun StoredCommandsSection(commands: List<String>) {
     val colors = BossTheme.colors
     val scroll = rememberScrollState()
     val fontScale = LocalDensity.current.fontScale
+    // Two answers, OR-ed. The arithmetic is right on the first frame but cannot model word wrap or
+    // a fallback font; the measured scroll range is exact once the box has laid out, and until
+    // then ScrollState reports Int.MAX_VALUE, which is excluded rather than read as "scrolls". So
+    // the bar can be late by one frame on a list the arithmetic underestimates, never missing.
+    val pinned =
+        storedCommandsOverflow(commands, fontScale) || scroll.maxValue in 1 until Int.MAX_VALUE
     Spacer(modifier = Modifier.height(10.dp))
     Text(
         text =
@@ -707,6 +715,7 @@ private fun StoredCommandsSection(commands: List<String>) {
                 .fillMaxWidth()
                 .heightIn(max = STORED_COMMANDS_BOX_HEIGHT)
                 .testTag(STORED_COMMANDS_BOX_TAG)
+                .semantics { this[StoredCommandsScrollbarPinned] = pinned }
                 .background(colors.raised, RoundedCornerShape(4.dp))
                 // Pinned visible when the list overflows the box, so text past the fold is never
                 // hidden without a sign. Gated on layout arithmetic, not on the scroll state, which
@@ -716,10 +725,7 @@ private fun StoredCommandsSection(commands: List<String>) {
                     direction = Orientation.Vertical,
                     config =
                         getPanelScrollbarConfig().copy(
-                            alpha =
-                                STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf {
-                                    storedCommandsOverflow(commands, fontScale)
-                                },
+                            alpha = STORED_COMMANDS_SCROLLBAR_ALPHA.takeIf { pinned },
                         ),
                 ).verticalScroll(scroll)
                 .padding(STORED_COMMANDS_BOX_PADDING),
@@ -791,6 +797,9 @@ internal fun storedCommandsPlaceholderNote(placeholders: List<String>): String =
         " filled in when the Space opens, from the project it opens in" +
         (if ("{projectPath}" in placeholders) " ({projectPath} as one shell-quoted argument)." else ".")
 
+/** Whether the stored-commands box has pinned its scrollbar visible: what the operator is shown. */
+internal val StoredCommandsScrollbarPinned = SemanticsPropertyKey<Boolean>("StoredCommandsScrollbarPinned")
+
 /** Test tag of the box the stored commands scroll in. */
 internal const val STORED_COMMANDS_BOX_TAG = "mcp-stored-commands-box"
 
@@ -815,7 +824,8 @@ private const val STORED_COMMANDS_CHARS_PER_LINE = 42
  * the user's [fontScale], plus its vertical padding; entries are [STORED_COMMAND_ENTRY_SPACING]
  * apart; the box loses its own padding top and bottom. Counting text lines alone, as this used
  * to, let five short entries scroll with no bar. Rounding errs toward showing the bar, which only
- * costs a thumb on a list that just fits.
+ * costs a thumb on a list that just fits. It is the first-frame half of the gate only: characters
+ * per line cannot model word wrap, so `StoredCommandsSection` ORs in the measured scroll range.
  */
 internal fun storedCommandsOverflow(
     commands: List<String>,
