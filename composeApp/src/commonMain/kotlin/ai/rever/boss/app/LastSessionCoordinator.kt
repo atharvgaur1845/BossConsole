@@ -183,18 +183,36 @@ class LastSessionCoordinator internal constructor(
      * set the hook deleted written back. Asking again inside the lock means a watcher that arrives
      * after the shutdown write adds nothing, and one that arrives first finishes before the hook
      * writes over it.
+     *
+     * Never throws, like [claimAndWrite]: a failure is logged and answered false. The caller is a
+     * window's layout watcher, and an exception escaping into it would end the watcher for the rest
+     * of that window's life - no unsaved marks, no recovery files - with nothing in the log.
      */
+    // Any failure, the set's serialization included, must be logged rather than end the watcher.
+    @Suppress("TooGenericExceptionCaught")
     fun writeInSession(
         windowId: String,
         record: LayoutWorkspace,
         set: LastSessionSet?,
-    ): Boolean {
+    ): Boolean =
         synchronized(writeLock) {
-            if (writtenThisSession.get() || !ownsSessionRecord(windowId)) return false
-            saveSet(set)
-            return saveRecord(record)
+            if (writtenThisSession.get() || !ownsSessionRecord(windowId)) {
+                false
+            } else {
+                try {
+                    saveSet(set)
+                    saveRecord(record)
+                } catch (e: Exception) {
+                    logger.warn(
+                        LogCategory.WORKSPACE,
+                        "In-session recovery write failed",
+                        mapOf("windowId" to windowId),
+                        error = e,
+                    )
+                    false
+                }
+            }
         }
-    }
 
     /** The primary window if it is still open, else any live window - the one a shutdown writes for. */
     private fun recordOwner(): Map.Entry<String, LiveWindow>? =

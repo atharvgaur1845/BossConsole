@@ -10,7 +10,10 @@ import ai.rever.boss.components.workspaces.isRestorable
 import ai.rever.boss.plugin.workspace.PanelConfig
 import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.plugin.workspace.TabConfig
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -21,6 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -341,5 +345,116 @@ class InSessionRecoveryTest {
             val next = session(dir)
             assertNull(next.loadLastSessionSet(), "the watcher's set must not land after the shutdown deleted it")
             assertEquals("at exit", recordedTitle(next))
+        }
+
+    @Test
+    fun `a write that throws is logged and answered false, and the watcher's next write still lands`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            cleanShutdown(dir)
+            val manager = session(dir)
+            val failures = AtomicInteger(1)
+            val coordinator =
+                LastSessionCoordinator(
+                    save = { manager.saveLastSessionBlocking(it) },
+                    saveSet = {
+                        // The reachable throw: the set's serialization runs outside the file write's catch.
+                        check(failures.getAndDecrement() <= 0) { "serialization failed" }
+                        manager.saveLastSessionSetBlocking(it)
+                    },
+                    saveRecord = { manager.writeLastSessionRecordBlocking(it) },
+                ).window("primary", primary = true)
+            val live = set("b" to "new b", "a" to "new a")
+
+            // Answered, not thrown: a throw would end the window's layout watcher for good.
+            assertFalse(writeInSessionRecovery("primary", record("lost"), { live }, coordinator, manager))
+            assertTrue(writeInSessionRecovery("primary", record("new a"), { live }, coordinator, manager))
+
+            val next = session(dir)
+            assertEquals(listOf("new b", "new a"), titles(next.loadLastSessionSet()))
+            assertEquals("new a", recordedTitle(next))
+        }
+
+    @Test
+    fun `a set that cannot be built skips the write instead of ending the watcher`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            cleanShutdown(dir)
+            val manager = session(dir)
+            val coordinator = wired(manager).window("primary", primary = true)
+
+            val unreadable = { error("live state unreadable") }
+            val wrote = writeInSessionRecovery("primary", record("unused"), unreadable, coordinator, manager)
+
+            // Nothing half-written: no record without the set it belongs with.
+            assertFalse(wrote)
+            val next = session(dir)
+            assertEquals(listOf("old b", "old a"), titles(next.loadLastSessionSet()))
+            assertEquals("old a", recordedTitle(next))
+        }
+
+    @Test
+    fun `a close that lands before the write is dispatched still records the window's last change`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            cleanShutdown(dir)
+            val manager = session(dir)
+            val coordinator = wired(manager).window("primary", primary = true)
+
+            // The window closes after its watcher has built the set and before the pair is
+            // dispatched to IO: the one moment a cancel can reach this write at all.
+            lateinit var watcher: Job
+            watcher =
+                launch(Dispatchers.Default, start = CoroutineStart.LAZY) {
+                    val live = set("b" to "new b", "a" to "new a")
+                    val build = {
+                        watcher.cancel()
+                        live
+                    }
+                    writeInSessionRecovery("primary", record("new a"), build, coordinator, manager)
+                }
+            watcher.start()
+            watcher.join()
+
+            val next = session(dir)
+            assertEquals(listOf("new b", "new a"), titles(next.loadLastSessionSet()))
+            assertEquals("new a", recordedTitle(next))
+        }
+
+    @Test
+    fun `a write whose window closed while it waited for the lock is refused`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            val manager = session(dir)
+            val gate = Gate(held = true)
+            val coordinator =
+                wired(manager, gate).window("primary", primary = true).window("secondary", primary = false)
+
+            // The primary's first write holds the lock, mid-pair.
+            val first =
+                launch(Dispatchers.Default) {
+                    writeInSessionRecovery("primary", record("first"), { null }, coordinator, manager)
+                }
+            assertTrue(gate.entered.await(10, TimeUnit.SECONDS), "the first write never started")
+            // Its next settle passes the ownership check, since the primary is still open, and builds
+            // its set.
+            val built = CountDownLatch(1)
+            val second =
+                async(Dispatchers.Default) {
+                    val build = {
+                        built.countDown()
+                        null
+                    }
+                    writeInSessionRecovery("primary", record("second"), build, coordinator, manager)
+                }
+            assertTrue(built.await(10, TimeUnit.SECONDS), "the second write never passed the ownership check")
+
+            // The primary closes before the second write gets the lock; the secondary owns the record now.
+            assertFalse(coordinator.onWindowDisposed("primary"))
+            gate.release.countDown()
+            first.join()
+
+            assertFalse(second.await(), "a write for a window that has closed must not land")
+            assertEquals("first", recordedTitle(session(dir)))
         }
 }

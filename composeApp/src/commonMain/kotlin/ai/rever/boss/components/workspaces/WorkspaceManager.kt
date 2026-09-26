@@ -471,7 +471,9 @@ class WorkspaceManager(
 
     /**
      * Write [record] as the Last Session file on the calling thread, and return whether it landed.
-     * [noteLastSessionRecordWritten] then refreshes the list entry, on the manager's dispatcher.
+     * [noteLastSessionRecordWritten] then refreshes the list entry, on the manager's dispatcher,
+     * unless the caller was cancelled meanwhile: the window is going away then, and the file is
+     * already on disk.
      *
      * The layout watcher's record write, blocking so it can sit beside the set's inside
      * `LastSessionCoordinator.writeInSession`, under the lock the shutdown write takes (see
