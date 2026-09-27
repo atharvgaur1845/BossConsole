@@ -4,8 +4,7 @@ import ai.rever.boss.components.workspaces.LastSessionSet
 import ai.rever.boss.components.workspaces.LayoutWorkspace
 import ai.rever.boss.components.workspaces.WorkspaceManager
 import ai.rever.boss.components.workspaces.workspaceManager
-import ai.rever.boss.utils.logging.BossLogger
-import ai.rever.boss.utils.logging.LogCategory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -28,34 +27,49 @@ import kotlinx.coroutines.withContext
  * watcher before the coordinator hears of the close, and without it a cancel that landed before the
  * IO dispatch would drop the window's last change unwritten.
  *
- * Neither building the set nor writing the pair can throw out of here. The caller is the layout
- * watcher, and an exception escaping into it would end the watcher for the rest of the window's
- * life; a failure is logged and answered false instead.
+ * Nothing throws out of here: not the ownership check (it runs every live window's `canSave`), not
+ * the set builder, not the pair. The caller is the layout watcher, and an exception escaping into it
+ * would end the watcher for the rest of the window's life. A failure is logged through
+ * [LastSessionCoordinator.reportInSessionFailure] - at warn once per run of failures, at debug after
+ * that - and answered false. Cancellation still propagates.
  *
  * Returns whether this window wrote the record. Any other window writes nothing: its layout was
  * never what a restart brings back, and writing it replaced the owner's recovery copy.
  */
+// A throw from the ownership check (another window's state), the set builder or the pair must
+// never end the watcher; cancellation still propagates.
+@Suppress("TooGenericExceptionCaught")
 internal suspend fun writeInSessionRecovery(
     windowId: String,
     record: LayoutWorkspace,
     set: () -> LastSessionSet?,
     coordinator: LastSessionCoordinator = LastSessionCoordinator.instance,
     manager: WorkspaceManager = workspaceManager,
+): Boolean =
+    try {
+        writeIfOwner(windowId, record, set, coordinator, manager)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (e: Exception) {
+        coordinator.reportInSessionFailure(windowId, "In-session recovery write skipped", e)
+        false
+    }
+
+private suspend fun writeIfOwner(
+    windowId: String,
+    record: LayoutWorkspace,
+    set: () -> LastSessionSet?,
+    coordinator: LastSessionCoordinator,
+    manager: WorkspaceManager,
 ): Boolean {
     if (!coordinator.ownsSessionRecord(windowId)) return false
-    // Built here, on the caller's dispatcher, because it reads live Compose state; a null result is a
-    // real answer (remove the set), so a failure is kept apart from it rather than mapped to null.
-    val liveSet = runCatching(set)
-    liveSet.exceptionOrNull()?.let {
-        logger.warn(LogCategory.WORKSPACE, "Could not build the Space set for recovery", error = it)
-    }
+    // Built here, on the caller's dispatcher, because it reads live Compose state. A null result
+    // is a real answer (remove the set); a throw lands in the caller's catch and writes nothing.
+    val liveSet = set()
     val written =
-        liveSet.isSuccess &&
-            withContext(Dispatchers.IO + NonCancellable) {
-                coordinator.writeInSession(windowId, record, liveSet.getOrNull())
-            }
+        withContext(Dispatchers.IO + NonCancellable) {
+            coordinator.writeInSession(windowId, record, liveSet)
+        }
     if (written) manager.noteLastSessionRecordWritten(record)
     return written
 }
-
-private val logger = BossLogger.forComponent("InSessionRecovery")

@@ -7,6 +7,10 @@ import ai.rever.boss.components.workspaces.LayoutWorkspace
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceManager
 import ai.rever.boss.components.workspaces.isRestorable
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogEntry
+import ai.rever.boss.plugin.logging.LogLevel
+import ai.rever.boss.plugin.logging.LogListener
 import ai.rever.boss.plugin.workspace.PanelConfig
 import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.plugin.workspace.TabConfig
@@ -480,5 +484,68 @@ class InSessionRecoveryTest {
 
             assertFalse(second.await(), "a write for a window that has closed must not land")
             assertEquals("first", recordedTitle(session(dir)))
+        }
+
+    @Test
+    fun `a throw from another window's ownership check never escapes into the watcher`() =
+        runBlocking<Unit> {
+            val dir = directory()
+            val manager = session(dir)
+            val broken = AtomicBoolean(true)
+            val coordinator = wired(manager).window("primary", primary = true)
+            // The secondary's state throws when read, as a window torn down mid-read might.
+            coordinator.register("secondary", isFirstWindow = false, canSave = {
+                check(!broken.get()) { "window state gone" }
+                true
+            }) { record("unused") }
+
+            // Answered, not thrown, both at the pre-check and inside the coordinator's lock.
+            assertFalse(writeInSessionRecovery("primary", record("while broken"), { null }, coordinator, manager))
+            assertFalse(coordinator.writeInSession("primary", record("while broken"), null))
+
+            // And the watcher is still alive to write once the fault clears.
+            broken.set(false)
+            assertTrue(writeInSessionRecovery("primary", record("recovered"), { null }, coordinator, manager))
+            assertEquals("recovered", recordedTitle(session(dir)))
+        }
+
+    @Test
+    fun `a fault that persists warns once, then logs at debug until a write goes through`() =
+        runBlocking<Unit> {
+            val entries = CopyOnWriteArrayList<LogEntry>()
+            val listener = LogListener { if ("In-session recovery" in it.message) entries += it }
+            val previous = BossLogger.globalLevel
+            BossLogger.setGlobalLevel(LogLevel.DEBUG)
+            BossLogger.addListener(listener)
+            try {
+                val dir = directory()
+                val manager = session(dir)
+                val failing = AtomicBoolean(true)
+                val coordinator =
+                    LastSessionCoordinator(
+                        save = { manager.saveLastSessionBlocking(it) },
+                        saveSet = {
+                            check(!failing.get()) { "disk full" }
+                            manager.saveLastSessionSetBlocking(it)
+                        },
+                        saveRecord = { manager.writeLastSessionRecordBlocking(it) },
+                    ).window("primary", primary = true)
+                val write = suspend { writeInSessionRecovery("primary", record("r"), { null }, coordinator, manager) }
+
+                // Three settles against a fault that persists: one warning, then debug.
+                repeat(3) { assertFalse(write()) }
+                assertEquals(listOf(LogLevel.WARN, LogLevel.DEBUG, LogLevel.DEBUG), entries.map { it.level })
+
+                // A write that goes through ends the run, so the next fault warns again.
+                failing.set(false)
+                assertTrue(write())
+                failing.set(true)
+                assertFalse(write())
+                assertEquals(LogLevel.WARN, entries.last().level)
+                assertEquals(2, entries.count { it.level == LogLevel.WARN })
+            } finally {
+                BossLogger.removeListener(listener)
+                BossLogger.setGlobalLevel(previous)
+            }
         }
 }
