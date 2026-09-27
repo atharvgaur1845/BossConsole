@@ -240,7 +240,7 @@ class WorkspaceMcpToolProviderTest {
             val record =
                 approving.core.ledger.recentOperations.value
                     .single()
-            assertEquals("[echo hidden]", record.sanitizedArgs["approvedStartupCommands"])
+            assertEquals(listOf("echo hidden"), record.storedCommands)
         }
 
     @Test

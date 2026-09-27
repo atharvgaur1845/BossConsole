@@ -508,6 +508,13 @@ internal object McpLedgerFormat {
                     if (record.escalated) {
                         append("\n    escalated: rated CRITICAL, so a saved allow did not cover it")
                     }
+                    record.storedCommands.forEachIndexed { index, command ->
+                        append("\n    stored command ${index + 1}: ").append(command)
+                    }
+                    if (record.approvalKeyStripped) {
+                        append("\n    approval key stripped: the arguments carried approvedStartupCommands, ")
+                        append("which only the host sets")
+                    }
                 }
             }
         val footer =
@@ -644,6 +651,8 @@ internal object McpLedgerFormat {
             put("errorSnippet", record.errorSnippet)
             put("secretRefs", buildJsonArray { record.secretRefs.forEach { add(it) } })
             put("escalated", record.escalated)
+            put("storedCommands", buildJsonArray { record.storedCommands.forEach { add(it) } })
+            put("approvalKeyStripped", record.approvalKeyStripped)
             put("hash", record.hash)
             put("parentHash", record.parentHash)
             put("file", entry.file.name)

@@ -159,6 +159,8 @@ class McpOperationLedger(
         countsAsCall: Boolean = true,
         secretRefs: List<String> = emptyList(),
         escalated: Boolean = false,
+        storedCommands: List<String> = emptyList(),
+        approvalKeyStripped: Boolean = false,
     ): McpOperationRecord {
         val sanitized = sanitizeArguments(rawArgs)
         // Bound regex work before sanitizing. Omit oversized input entirely so cutting through
@@ -185,6 +187,11 @@ class McpOperationLedger(
                 errorSnippet = sanitizedErrorSnippet,
                 secretRefs = secretRefs,
                 escalated = escalated,
+                // Through the sanitizer like every other text here. A stored command only reaches
+                // a prompt when the sanitizer leaves it unchanged (storedCommandShownInFull), so
+                // this records it exactly, and in full: no per-value cap applies to this list.
+                storedCommands = storedCommands.map(McpArgumentSanitizer::sanitizeMessage),
+                approvalKeyStripped = approvalKeyStripped,
             )
 
         // Under one lock so queue order always equals ring-buffer order. What does NOT

@@ -2405,7 +2405,9 @@ provider is ALLOW-ed or session-trusted; durable answers to that prompt are take
 approval, since the prompt was raised for the commands and not the tool. After approval the
 registry hands the same list back to the handler under `approvedStartupCommands`, which it
 strips from every incoming call first, so the handler treats the key as the registry's word and
-nobody else's; a Space whose commands changed between the prompt and the open is refused. A
+nobody else's. That strip, and the key's write and read, take the same depth check before any
+tree parse as every other invoke-path parse (`McpJsonDepth.kt`), since the strip runs ahead of
+`invalidArguments`; a Space whose commands changed between the prompt and the open is refused. A
 source that throws refuses the call, and more than `MAX_STORED_COMMANDS_PER_CALL` commands are
 refused before any prompt, as is any command over `MAX_STORED_COMMAND_CHARS`, commands adding up
 to more than `MAX_STORED_COMMANDS_TOTAL_CHARS` (both caps measured on the text as shown, since
@@ -2420,18 +2422,22 @@ nothing from the vault. The prompt is presented as #1624's escalated prompt (no 
 durable deny stays available, and its wording names the commands rather than destructiveness),
 and YOLO mode does not answer it. Its ledger row still records `escalated: false`: that field
 keeps #1655's meaning (a destructive shell call raised to ASK), and a stored-command call is
-told apart by `policyApplied = ASK` and the `approvedStartupCommands` key it carries. Each
-command is shown through `displayableStoredCommand`, which walks code points and escapes by
-Unicode category (controls, format characters including the tag block, line and paragraph
-separators, private-use, unassigned) plus the invisible fillers and variation selectors, and
-sits in a bordered entry of its own with the number in a separate column, so a line that
-soft-wraps (a run of spaces pushing `2. $ curl ...` onto the next line) hangs inside its entry
-instead of reading as the next one. Keep it a category test: a range list goes out of date, and
-U+2028 was exactly such a gap, a mandatory line break that drew one command as two numbered
-entries. The box pins its scrollbar whenever the list runs past it, from two answers OR-ed:
-`storedCommandsOverflow`, arithmetic that is a LOWER bound on the height (at least a line per
-entry, at more characters per line than any monospace font fits), so it is right on the first
-frame whenever it says yes and never pins a bar over a list that fits; and the measured
+told apart by `policyApplied = ASK` and its `storedCommands`. Those are fields of the ledger
+record, not arguments: `storedCommands` holds every command the prompt showed, in full (an
+argument value is cut at 4096 characters, and the prompt shows up to
+`MAX_STORED_COMMANDS_TOTAL_CHARS`), and `approvalKeyStripped` records that the agent's arguments
+carried the approval key and the host removed it. No argument an agent writes can forge either
+field. Each command is shown through `displayableStoredCommand`, which walks code points and
+escapes by Unicode category (controls, format characters including the tag block, line and
+paragraph separators, private-use, unassigned) plus the invisible fillers and variation
+selectors, and sits in a bordered entry of its own with the number in a separate column, so a
+line that soft-wraps (a run of spaces pushing `2. $ curl ...` onto the next line) hangs inside
+its entry instead of reading as the next one. Keep it a category test: a range list goes out of
+date, and U+2028 was exactly such a gap, a mandatory line break that drew one command as two
+numbered entries. The box pins its scrollbar whenever the list runs past it, from two answers
+OR-ed: `storedCommandsOverflow`, arithmetic that is a LOWER bound on the height (at least a line
+per entry, at more characters per line than any monospace font fits), so it is right on the
+first frame whenever it says yes and never pins a bar over a list that fits; and the measured
 `ScrollState.maxValue`, with its `Int.MAX_VALUE` before-layout sentinel excluded. That is not
 the scroll-state read the tools-menu section forbids: the sentinel is never read as "scrolls",
 and the arithmetic owns the first frame, so a list only the measurement catches gets its bar one

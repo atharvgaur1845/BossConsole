@@ -50,6 +50,22 @@ data class McpOperationRecord(
      */
     val escalated: Boolean = false,
     /**
+     * The stored startup commands this call would run, as the operator was shown them in the
+     * approval prompt (see `McpStoredCommandSource`), in full. Recorded here rather than in
+     * [sanitizedArgs], whose values are capped at 4096 characters: the prompt shows up to
+     * `MAX_STORED_COMMANDS_TOTAL_CHARS`, and an audit record of what was approved must not be
+     * shorter than what was approved. Empty for every other call. Hashed only when non-empty.
+     */
+    val storedCommands: List<String> = emptyList(),
+    /**
+     * True when the agent's arguments carried the registry's own approval key
+     * (`approvedStartupCommands`) and the host removed it before the policy, the prompt or the
+     * handler read them. [sanitizedArgs] records the arguments without it, so this is the only
+     * trace of the attempt. A field of the record rather than an argument, so no argument an agent
+     * writes can forge it. Hashed only when true.
+     */
+    val approvalKeyStripped: Boolean = false,
+    /**
      * SHA-256 over [parentHash] and this record's [canonicalFormForHashing], so a record edited
      * after the fact no longer agrees with the chain that follows it.
      *
@@ -104,5 +120,12 @@ internal fun McpOperationRecord.canonicalFormForHashing(): String =
         // Written only when set, like secretRefs, so every record without it hashes as it did.
         if (escalated) {
             put("escalated", true)
+        }
+        // Both written only when set, for the same reason.
+        if (storedCommands.isNotEmpty()) {
+            put("storedCommands", JsonArray(storedCommands.map(::JsonPrimitive)))
+        }
+        if (approvalKeyStripped) {
+            put("approvalKeyStripped", true)
         }
     }.toString()

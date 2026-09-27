@@ -993,6 +993,16 @@ internal class McpToolRegistryCore(
         // under it is dropped before the source, the policy, the prompt or the handler see it.
         val parsed = parseMcpToolArgs(arguments, logger)
         val args = if (source != null) parsed.withoutApprovedStoredCommands() else parsed
+        // withoutApprovedStoredCommands hands back the same instance when there was nothing to
+        // remove, so a different one means the agent sent the key. The ledger row says so.
+        val approvalKeyStripped = args !== parsed
+        if (approvalKeyStripped) {
+            logger.warn(
+                LogCategory.SYSTEM,
+                "MCP call carried the host's approval key; removed before any reader saw it",
+                mapOf("tool" to tool.definition.name),
+            )
+        }
         // Policy is consulted under the canonical name: an alias must inherit the
         // canonical tool's policy, not fall back to whatever default the alias's
         // own name would classify as.
@@ -1091,10 +1101,12 @@ internal class McpToolRegistryCore(
                     approvalDisposition = disposition,
                     durationMs = (System.nanoTime() - startTime) / 1_000_000L,
                     isError = result?.isError ?: true,
-                    // What the agent wrote (references intact, a forged approval key removed), plus
-                    // the stored commands the operator was shown, under the key the handler got
-                    // them by: this record carries what was approved and never a secret value.
-                    rawArgs = McpArgumentSanitizer.parseArguments(args.raw) + stored.ledgerEntry(),
+                    // What the agent wrote, references intact and a forged approval key removed. The
+                    // stored commands the operator was shown, and the removal itself, are fields of
+                    // the record: in full, and beyond any argument's reach.
+                    rawArgs = McpArgumentSanitizer.parseArguments(args.raw),
+                    storedCommands = stored.commands,
+                    approvalKeyStripped = approvalKeyStripped,
                     errorSnippet =
                         when {
                             result == null -> "Execution cancelled by caller"
@@ -1149,11 +1161,6 @@ internal class McpToolRegistryCore(
         val commands: List<String>,
         val refusal: String? = null,
     ) {
-        fun ledgerEntry(): Map<String, Any?> {
-            if (commands.isEmpty()) return emptyMap()
-            return mapOf(APPROVED_STORED_COMMANDS_KEY to commands)
-        }
-
         /** ASK whatever the tool's rule or trust says, unless the tool is denied outright. */
         fun effectivePolicy(toolPolicy: McpPolicyAction): McpPolicyAction =
             if (commands.isNotEmpty() && toolPolicy != McpPolicyAction.DENY) McpPolicyAction.ASK else toolPolicy

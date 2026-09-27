@@ -183,11 +183,20 @@ internal fun McpToolArgs.approvedStoredCommands(): List<String>? {
     return approved?.map { it.jsonPrimitive.content }
 }
 
+/**
+ * [raw] as a JSON object, or null when it is not one. Depth-checked BEFORE the tree parse, as
+ * every invoke-path parse is (see [MAX_MCP_ARGUMENT_DEPTH]): kotlinx's reader recurses once per
+ * level, and the strip in `McpToolRegistryCore.invoke` runs ahead of `invalidArguments`. An
+ * over-deep payload is "not an object" here, so nothing is stripped, written or read from it, and
+ * `invalidArguments` then refuses the call before any source, prompt or handler sees it.
+ */
 // Anything a malformed argument string throws means "not an object"; the handler sees the raw text as it always did.
 @Suppress("TooGenericExceptionCaught", "SwallowedException")
-private fun parseObject(raw: String): JsonObject? =
-    try {
+private fun parseObject(raw: String): JsonObject? {
+    if (mcpJsonNestingExceeds(raw)) return null
+    return try {
         storedCommandsJson.parseToJsonElement(raw) as? JsonObject
     } catch (t: Throwable) {
         null
     }
+}

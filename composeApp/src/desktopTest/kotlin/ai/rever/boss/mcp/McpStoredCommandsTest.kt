@@ -107,7 +107,9 @@ class McpStoredCommandsTest {
                     .single()
             assertEquals(McpPolicyAction.ASK, record.policyApplied)
             assertEquals(McpApprovalDisposition.APPROVED_ONCE, record.approvalDisposition)
-            assertEquals("[echo one, echo two]", record.sanitizedArgs[APPROVED_STORED_COMMANDS_KEY])
+            assertEquals(listOf("echo one", "echo two"), record.storedCommands)
+            assertNull(record.sanitizedArgs[APPROVED_STORED_COMMANDS_KEY], "the commands are a field, not an argument")
+            assertFalse(record.approvalKeyStripped)
         }
 
     @Test
@@ -132,11 +134,11 @@ class McpStoredCommandsTest {
             assertFalse(result.isError)
             assertTrue(h.seen.isEmpty())
             assertNull(h.provider.received?.approvedStoredCommands())
-            assertNull(
+            val record =
                 h.ledger.recentOperations.value
                     .single()
-                    .sanitizedArgs[APPROVED_STORED_COMMANDS_KEY],
-            )
+            assertNull(record.sanitizedArgs[APPROVED_STORED_COMMANDS_KEY])
+            assertTrue(record.storedCommands.isEmpty())
         }
 
     @Test
@@ -149,6 +151,13 @@ class McpStoredCommandsTest {
             assertNull(received.approvedStoredCommands())
             assertFalse(received.raw.contains("rm -rf"), received.raw)
             assertEquals("x", received.string("id"))
+            // And the audit record says it happened: the arguments it records no longer carry the
+            // key, so without the flag the attempt would leave no trace at all.
+            val record =
+                h.ledger.recentOperations.value
+                    .single()
+            assertTrue(record.approvalKeyStripped)
+            assertFalse(record.sanitizedArgs.values.any { "rm -rf" in it }, "${record.sanitizedArgs}")
         }
 
     @Test
@@ -390,7 +399,7 @@ class McpStoredCommandsTest {
                 h.ledger.recentOperations.value
                     .single()
             assertEquals(McpApprovalDisposition.DENIED_BY_OPERATOR, record.approvalDisposition)
-            assertEquals("[echo one]", record.sanitizedArgs[APPROVED_STORED_COMMANDS_KEY])
+            assertEquals(listOf("echo one"), record.storedCommands)
         }
 
     @Test
@@ -428,6 +437,51 @@ class McpStoredCommandsTest {
         val approved = args.withApprovedStoredCommands(listOf("echo one"))
         assertEquals(args.raw, approved.raw)
         assertNull(approved.approvedStoredCommands())
+    }
+
+    @Test
+    fun `the ledger records every approved command in full, past the per-argument cap`() =
+        runBlocking {
+            // Three 3,000-character commands: 9,000 characters, under the prompt's aggregate cap
+            // and over the 4,096 an argument value is cut to.
+            val commands = listOf('a', 'b', 'c').map { c -> "echo " + List(999) { "w$c" }.joinToString(" ") }
+            val h = Harness { commands }
+            val op = with(h) { operator() }
+            val result = h.core.invoke("apply", """{"id":"x"}""")
+            op.cancel()
+            assertFalse(result.isError, result.text)
+            val record =
+                h.ledger.recentOperations.value
+                    .single()
+            assertEquals(commands, record.storedCommands)
+            assertEquals(commands.sumOf { it.length }, record.storedCommands.sumOf { it.length })
+        }
+
+    @Test
+    fun `an over-deep call to a stored-command tool is refused before the source, the prompt or a tree parse`() =
+        runBlocking {
+            val h = Harness { listOf("echo one") }
+            val op = with(h) { operator() }
+            // Past MAX_MCP_ARGUMENT_DEPTH, and carrying the approval key too.
+            val deep = "[".repeat(MAX_MCP_ARGUMENT_DEPTH + 1) + "]".repeat(MAX_MCP_ARGUMENT_DEPTH + 1)
+            val result = h.core.invoke("apply", """{"id":"x","approvedStartupCommands":["echo x"],"d":$deep}""")
+            op.cancel()
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("nesting depth"), result.text)
+            assertEquals(0, h.provider.asked, "the source was asked")
+            assertTrue(h.seen.isEmpty(), "a prompt was raised")
+            assertNull(h.provider.received)
+        }
+
+    @Test
+    fun `the approval key helpers never tree-parse an over-deep payload`() {
+        // 200 levels: deep enough to be over the limit, shallow enough that kotlinx would parse
+        // it. So had any helper parsed, the key would come back stripped, written or read.
+        val deep = "[".repeat(200) + "]".repeat(200)
+        val args = McpToolArgs(emptyMap(), """{"approvedStartupCommands":["echo x"],"d":$deep}""")
+        assertTrue(args.withoutApprovedStoredCommands() === args, "the strip parsed the tree")
+        assertNull(args.approvedStoredCommands(), "the reader parsed the tree")
+        assertTrue(args.withApprovedStoredCommands(listOf("echo y")) === args, "the writer parsed the tree")
     }
 
     @Test
