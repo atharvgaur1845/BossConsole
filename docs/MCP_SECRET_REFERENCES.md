@@ -87,7 +87,8 @@ agent --> terminal-tab bridge --> McpToolRegistryCore.invoke(name, argsJson)
  [11] substitute                                       one rewrite of the argument tree; scalar map and raw JSON agree
  [12] re-assess the SUBSTITUTED arguments              risk went up -> SECRET_FORBIDDEN, refused, never re-prompted
  [13] execute                                          unchanged timeout and failure handling
- [14] scrub                                            defense in depth; before the cap
+ [14] scrub                                            defense in depth; before the cap; on if the
+                                                        switch was on at [8] or at [13]
  [15] cap                                              unchanged
  [16] ledger                                           the ORIGINAL arguments (references intact) + secretRefs
 ```
@@ -166,7 +167,8 @@ up INV5 (calls without references stay byte-identical); it is listed under futur
 
 `resultScrubbingEnabled = false` switches the scrubber off. The invariant tests run with it off
 to prove that every other surface still holds. An echoing handler's result then contains the
-value, and that returned text can also reach the persisted ledger's error snippet.
+value, and that returned text can also reach the persisted ledger's error snippet. That is what
+the settings dialog's second, confirming tap says before it turns scrubbing off.
 
 Scrubbing runs before the result cap, so a cut can never land inside a value and leave half of it
 readable.
@@ -259,15 +261,29 @@ plaintext still is not: the boundary, demonstrated rather than described).
 - **Finding an id:** `secrets_list` or `secret_search` return `id <tab> website <tab> username`.
 - **Kill-switching `secret_get`:** references are a separate host path. Disabling or uninstalling
   the Secret Manager plugin does not disable them. To remove agent credential delivery entirely,
-  set `secretBearingCalls` to `DENY` (or `secretReferencesEnabled` to `false`) in the policy file
-  and restart.
+  set `secretBearingCalls` to `DENY` (or `secretReferencesEnabled` to `false`): from
+  **MCP access > Secret references...** in the bottom bar, which applies at once, or in the policy
+  file and restart.
 - **Configuration:** three fields in `~/.boss/mcp-tool-policy.json`, all optional:
 
   ```json
   { "secretReferencesEnabled": true, "secretBearingCalls": "ASK", "resultScrubbingEnabled": true }
   ```
 
-  Policies are loaded at startup; editing the file requires a restart, as for every other field.
+  They are set from **MCP access > Secret references...** in the bottom bar. The dialog offers
+  nothing the file does not (Ask or Refuse for secret-bearing calls, never Allow), saves the
+  three in one write with every rule unchanged, and asks for a second, confirming tap before it
+  turns scrubbing off. A save is refused, not written over, when another window changed the
+  switches since the dialog opened, and while the policy file cannot be read. Each saved change
+  writes a `host_secret_settings` governance marker to the ledger (provider `host`,
+  `HOST_SECRET_SETTINGS_CHANGED`, not counted as a call) with every switch's new value and which
+  ones changed.
+
+  A change applies at once, including to a call whose prompt is open: the registry reads the
+  switches again after the prompt, so delivery switched off or secret-bearing calls refused
+  meanwhile refuses the approved call (`SECRET_FORBIDDEN`), and its result is scrubbed if
+  scrubbing was on when the call was prepared or when it ran. A change can only make that call
+  more careful. Editing the file by hand still needs a restart, as for every other field.
 - **CLI:** `boss mcp invoke <tool> --args '{"...":"{{secret:<id>}}"}'` takes the same path and
   prompts in the running BOSS window.
 
@@ -277,8 +293,10 @@ plaintext still is not: the boundary, demonstrated rather than described).
 |---|---|---|
 | `Malformed secret reference: ...` | Not a UUID, a field other than `password`, `username`, `notes`, no closing `}}`, or a reference in a JSON key | Fix the spelling; get the id from `secrets_list` |
 | `Secret references require the secret.read permission` | Non-admin user without `secret.read` | Ask an admin for the role; the same permission gates `secret_get` |
-| `Secret references are disabled on this host` | `secretReferencesEnabled = false` | Operator decision; edit the policy file and restart |
-| `Secret-bearing calls are refused by host policy` | `secretBearingCalls = DENY` | Operator decision |
+| `Secret references are disabled on this host` | `secretReferencesEnabled = false` | Operator decision; MCP access > Secret references |
+| `Secret-bearing calls are refused by host policy` | `secretBearingCalls = DENY` | Operator decision; MCP access > Secret references |
+| `Secret references were disabled while awaiting approval` | Delivery switched off between the prompt and the approval | The operator's choice stands; turn delivery back on and retry |
+| `Secret-bearing calls were refused by host policy while awaiting approval` | Secret-bearing calls set to Refuse between the prompt and the approval | The operator's choice stands; set them back to Ask and retry |
 | `no secret with id ...` | Unknown, or not visible to the signed-in user (their own and their organisations' secrets are) | Shared-with-me secrets are not resolvable in v1 |
 | `A call may carry at most 16 secret references` | More than 16 distinct references in one call | Split the call, or reference fewer secrets |
 | `Secret access (secret.read) was lost while awaiting approval` | Signed out, or the permission was removed, between the prompt and the approval | Sign in again and retry; the ledger records `SECRET_FORBIDDEN` |

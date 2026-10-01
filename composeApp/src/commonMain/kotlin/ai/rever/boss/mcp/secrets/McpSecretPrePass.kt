@@ -195,8 +195,13 @@ internal sealed interface SecretPreparation {
     /** The arguments the handler receives: substituted only when resolved. */
     fun executionArgs(original: McpToolArgs): McpToolArgs = original
 
-    /** The result transform: the scrubber only when resolved and enabled. */
-    fun resultFilter(): McpResultFilter = McpResultFilter.NONE
+    /**
+     * The result transform: the scrubber only when resolved and enabled. [scrubbingEnabledNow] is
+     * the switch as it reads when the call runs; a resolved call is scrubbed if scrubbing was on
+     * then or when it was prepared, so a change made while its prompt was open can only make it
+     * more careful.
+     */
+    fun resultFilter(scrubbingEnabledNow: Boolean): McpResultFilter = McpResultFilter.NONE
 
     data object None : SecretPreparation {
         override val references: Set<SecretReference> get() = emptySet()
@@ -231,7 +236,8 @@ internal sealed interface SecretPreparation {
 
         override fun effectivePolicy(toolPolicy: McpPolicyAction): McpPolicyAction = McpPolicyAction.ASK
 
-        override fun resultFilter(): McpResultFilter = if (scrub) McpResultScrubber(values) else McpResultFilter.NONE
+        override fun resultFilter(scrubbingEnabledNow: Boolean): McpResultFilter =
+            if (scrub || scrubbingEnabledNow) McpResultScrubber(values) else McpResultFilter.NONE
 
         /** Never the values. */
         override fun toString(): String = "Ready(references=${references.map { it.ledgerName }})"

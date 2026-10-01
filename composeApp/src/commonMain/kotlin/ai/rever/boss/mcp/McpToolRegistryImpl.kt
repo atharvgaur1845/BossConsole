@@ -228,6 +228,12 @@ object McpToolRegistryImpl : McpToolRegistry {
 
     /** See `Core.setYoloMode`. The only way UI should switch YOLO mode. */
     suspend fun setYoloMode(enabled: Boolean): Boolean = core.setYoloMode(enabled)
+
+    /** The "Secret references" dialog's save: see [changeHostSecretSettings]. */
+    suspend fun setHostSecretSettings(
+        expected: McpHostSecretSettings,
+        updated: McpHostSecretSettings,
+    ): McpProactivePolicyOutcome = changeHostSecretSettings(policyEngine, ledger, expected, updated)
 }
 
 /**
@@ -1051,7 +1057,11 @@ internal class McpToolRegistryCore(
                             McpToolResult(escalation, isError = true)
                         } else {
                             executionStarted = true
-                            executeAuthorized(tool, substituted, secrets.resultFilter())
+                            executeAuthorized(
+                                tool,
+                                substituted,
+                                secrets.resultFilter(policyEngine.config.value.resultScrubbingEnabled),
+                            )
                         }
                     }
                 }
@@ -1162,9 +1172,9 @@ internal class McpToolRegistryCore(
                 SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
             }
 
-            // This branch and the next are unreachable today: nothing sets either switch at runtime
-            // (the policy engine only persists rule changes, which carry both unchanged). They are
-            // here so a runtime setter, when one is added, is fenced without a second change.
+            // This branch and the next are how a switch changed from the "Secret references"
+            // dialog (McpPolicyEngine.setHostSecretSettings) while this prompt was open takes
+            // effect: the operator's answer predates the change, so it cannot carry the call.
             !config.secretReferencesEnabled -> {
                 "Secret references were disabled while awaiting approval; the call was not run"
             }

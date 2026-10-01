@@ -4,6 +4,7 @@ import ai.rever.boss.mcp.McpApprovalBus
 import ai.rever.boss.mcp.McpApprovalDisposition
 import ai.rever.boss.mcp.McpApprovalRequest
 import ai.rever.boss.mcp.McpArgumentSanitizer
+import ai.rever.boss.mcp.McpHostSecretSettings
 import ai.rever.boss.mcp.McpOperationLedger
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpPolicyEngine
@@ -12,6 +13,8 @@ import ai.rever.boss.mcp.McpToolPolicyConfig
 import ai.rever.boss.mcp.McpToolRegistryCore
 import ai.rever.boss.mcp.SECRET_ACCESS_REVOKED_WHILE_AWAITING_APPROVAL
 import ai.rever.boss.mcp.SECRET_READ_PERMISSION
+import ai.rever.boss.mcp.changeHostSecretSettings
+import ai.rever.boss.mcp.hostSecretSettings
 import ai.rever.boss.mcp.parseMcpToolArgs
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
@@ -941,6 +944,77 @@ class SecretReferenceInvariantTest {
                     .single()
             assertEquals(McpApprovalDisposition.SECRET_FORBIDDEN, rec.approvalDisposition)
             assertEquals(listOf("$id.password"), rec.secretRefs)
+        }
+
+    /**
+     * The "Secret references" dialog's switches, changed while a secret-bearing prompt is open.
+     * The operator's answer predates the change, so it cannot carry the call: the registry reads
+     * the switches again after the prompt and refuses at the secret fence.
+     */
+    private fun switchedMidPrompt(
+        updated: (McpHostSecretSettings) -> McpHostSecretSettings,
+        expectedText: String,
+    ) = runBlocking<Unit> {
+        val h = Harness(CountingVault(listOf(record)))
+        var called = false
+        h.register(
+            tool("write") {
+                called = true
+                McpToolResult("ran")
+            },
+        )
+        val pending = async { h.core.invoke("write", """{"a":"{{secret:$id}}"}""") }
+        val req =
+            h.approvalBus.pendingList
+                .first { it.isNotEmpty() }
+                .first()
+        val before = h.policyEngine.config.value.hostSecretSettings
+        changeHostSecretSettings(h.policyEngine, h.ledger, before, updated(before))
+        h.approvalBus.approve(req.id)
+        val result = pending.await()
+        assertTrue(result.isError)
+        assertFalse(called)
+        assertEquals(expectedText, result.text)
+        val call =
+            h.ledger.recentOperations.value
+                .single { it.toolName == "write" }
+        assertEquals(McpApprovalDisposition.SECRET_FORBIDDEN, call.approvalDisposition)
+        assertEquals(listOf("$id.password"), call.secretRefs)
+    }
+
+    @Test
+    fun `INV4 - delivery switched off while the prompt is open refuses the approved call`() =
+        switchedMidPrompt(
+            updated = { it.copy(referencesEnabled = false) },
+            expectedText = "Secret references were disabled while awaiting approval; the call was not run",
+        )
+
+    @Test
+    fun `INV4 - secret-bearing calls refused while the prompt is open refuses the approved call`() =
+        switchedMidPrompt(
+            updated = { it.copy(secretBearingCalls = McpSecretPolicyAction.DENY) },
+            expectedText =
+                "Secret-bearing calls were refused by host policy while awaiting approval; the call was not run",
+        )
+
+    @Test
+    fun `INV1 - scrubbing switched on while the prompt is open applies to that call`() =
+        runBlocking<Unit> {
+            val file = tempPolicyFile()
+            val h = Harness(CountingVault(listOf(record)), file, McpToolPolicyConfig(resultScrubbingEnabled = false))
+            h.register(tool("echo") { args -> McpToolResult("echo:" + args.string("token")) })
+            val pending = async { h.core.invoke("echo", """{"token":"{{secret:$id}}"}""") }
+            val req =
+                h.approvalBus.pendingList
+                    .first { it.isNotEmpty() }
+                    .first()
+            // Prepared with scrubbing off; the operator turns it on before answering.
+            val before = h.policyEngine.config.value.hostSecretSettings
+            changeHostSecretSettings(h.policyEngine, h.ledger, before, before.copy(resultScrubbingEnabled = true))
+            h.approvalBus.approve(req.id)
+            val result = pending.await()
+            assertFalse(result.isError, result.text)
+            assertFalse(result.text.contains(secret), result.text)
         }
 
     /**
