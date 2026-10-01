@@ -275,7 +275,7 @@ plaintext still is not: the boundary, demonstrated rather than described).
 
 | Message | Cause | Next step |
 |---|---|---|
-| `Malformed secret reference {{secret:...}}: ...` | Not a UUID, or a field other than `password`, `username`, `notes` | Fix the spelling; get the id from `secrets_list` |
+| `Malformed secret reference: ...` | Not a UUID, a field other than `password`, `username`, `notes`, no closing `}}`, or a reference in a JSON key | Fix the spelling; get the id from `secrets_list` |
 | `Secret references require the secret.read permission` | Non-admin user without `secret.read` | Ask an admin for the role; the same permission gates `secret_get` |
 | `Secret references are disabled on this host` | `secretReferencesEnabled = false` | Operator decision; edit the policy file and restart |
 | `Secret-bearing calls are refused by host policy` | `secretBearingCalls = DENY` | Operator decision |
