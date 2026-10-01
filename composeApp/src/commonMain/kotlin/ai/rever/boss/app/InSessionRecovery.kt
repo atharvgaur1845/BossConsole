@@ -27,17 +27,21 @@ import kotlinx.coroutines.withContext
  * watcher before the coordinator hears of the close, and without it a cancel that landed before the
  * IO dispatch would drop the window's last change unwritten.
  *
- * Nothing throws out of here: not the ownership check (it runs every live window's `canSave`), not
- * the set builder, not the pair. The caller is the layout watcher, and an exception escaping into it
- * would end the watcher for the rest of the window's life. A failure is logged through
- * [LastSessionCoordinator.reportInSessionFailure] - at warn once per run of failures, at debug after
- * that - and answered false. Cancellation still propagates.
+ * No [Exception] escapes from here: not from the ownership check (it runs every live window's
+ * `canSave`), not from the set builder, not from the pair or the bookkeeping after it. The caller is
+ * the layout watcher, and an exception escaping into it would end the watcher for the rest of the
+ * window's life. A failure is logged through [LastSessionCoordinator.reportInSessionFailure] - at
+ * warn once per run of failures, at debug after that, each step under a message of its own - and
+ * answered false. A run ends only when a whole write goes through, bookkeeping included. An [Error]
+ * still escapes, as does cancellation.
  *
- * Returns whether this window wrote the record. Any other window writes nothing: its layout was
- * never what a restart brings back, and writing it replaced the owner's recovery copy.
+ * Returns whether this window wrote the record and noted it written. Any other window writes
+ * nothing: its layout was never what a restart brings back, and writing it replaced the owner's
+ * recovery copy. False is also the answer in the one case where the record did land: the note
+ * after it threw. No caller reads the difference.
  */
-// A throw from the ownership check (another window's state), the set builder or the pair must
-// never end the watcher; cancellation still propagates.
+// A throw from the ownership check (another window's state), the set builder, the pair or the
+// note after it must never end the watcher; cancellation still propagates.
 @Suppress("TooGenericExceptionCaught")
 internal suspend fun writeInSessionRecovery(
     windowId: String,
@@ -45,31 +49,30 @@ internal suspend fun writeInSessionRecovery(
     set: () -> LastSessionSet?,
     coordinator: LastSessionCoordinator = LastSessionCoordinator.instance,
     manager: WorkspaceManager = workspaceManager,
-): Boolean =
-    try {
-        writeIfOwner(windowId, record, set, coordinator, manager)
+): Boolean {
+    // The step under way, so each failure is logged under a message of its own.
+    var step = "In-session recovery ownership check failed"
+    return try {
+        if (!coordinator.ownsSessionRecord(windowId)) return false
+        step = "Could not build the Space set for recovery"
+        // Built here, on the caller's dispatcher, because it reads live Compose state. A null
+        // result is a real answer (remove the set); a throw writes nothing.
+        val liveSet = set()
+        step = "In-session recovery write failed"
+        val written =
+            withContext(Dispatchers.IO + NonCancellable) {
+                coordinator.writeInSession(windowId, record, liveSet)
+            }
+        if (written) {
+            step = "In-session recovery write landed, but noting it failed"
+            manager.noteLastSessionRecordWritten(record)
+            coordinator.endInSessionFailureRun()
+        }
+        written
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (e: Exception) {
-        coordinator.reportInSessionFailure(windowId, "In-session recovery write skipped", e)
+        coordinator.reportInSessionFailure(windowId, step, e)
         false
     }
-
-private suspend fun writeIfOwner(
-    windowId: String,
-    record: LayoutWorkspace,
-    set: () -> LastSessionSet?,
-    coordinator: LastSessionCoordinator,
-    manager: WorkspaceManager,
-): Boolean {
-    if (!coordinator.ownsSessionRecord(windowId)) return false
-    // Built here, on the caller's dispatcher, because it reads live Compose state. A null result
-    // is a real answer (remove the set); a throw lands in the caller's catch and writes nothing.
-    val liveSet = set()
-    val written =
-        withContext(Dispatchers.IO + NonCancellable) {
-            coordinator.writeInSession(windowId, record, liveSet)
-        }
-    if (written) manager.noteLastSessionRecordWritten(record)
-    return written
 }

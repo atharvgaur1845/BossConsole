@@ -511,6 +511,91 @@ class InSessionRecoveryTest {
 
     @Test
     fun `a fault that persists warns once, then logs at debug until a write goes through`() =
+        inSessionLog { entries ->
+            val dir = directory()
+            val manager = session(dir)
+            val failing = AtomicBoolean(true)
+            val coordinator =
+                LastSessionCoordinator(
+                    save = { manager.saveLastSessionBlocking(it) },
+                    saveSet = {
+                        check(!failing.get()) { "disk full" }
+                        manager.saveLastSessionSetBlocking(it)
+                    },
+                    saveRecord = { manager.writeLastSessionRecordBlocking(it) },
+                ).window("primary", primary = true)
+            val write = suspend { writeInSessionRecovery("primary", record("r"), { null }, coordinator, manager) }
+
+            // Three settles against a fault that persists: one warning, then debug.
+            repeat(3) { assertFalse(write()) }
+            assertEquals(listOf(LogLevel.WARN, LogLevel.DEBUG, LogLevel.DEBUG), entries.map { it.level })
+
+            // A write that goes through ends the run, so the next fault warns again.
+            failing.set(false)
+            assertTrue(write())
+            failing.set(true)
+            assertFalse(write())
+            assertEquals(LogLevel.WARN, entries.last().level)
+            assertEquals(2, entries.count { it.level == LogLevel.WARN })
+        }
+
+    @Test
+    fun `a write that answers false is part of the run, and does not end it`() =
+        inSessionLog { entries ->
+            val dir = directory()
+            val manager = session(dir)
+            // The realistic persistent fault, a full or read-only disk: the writers catch their
+            // own I/O failure and answer false, so nothing throws. Mixed with a throw, as a disk
+            // that fills while the set is being encoded would be.
+            val outcomes = ArrayDeque(listOf("false", "throw", "false", "false", "lands", "false"))
+            val coordinator =
+                LastSessionCoordinator(
+                    save = { manager.saveLastSessionBlocking(it) },
+                    saveSet = { manager.saveLastSessionSetBlocking(it) },
+                    saveRecord = {
+                        when (outcomes.removeFirst()) {
+                            "throw" -> error("disk full")
+                            "false" -> false
+                            else -> manager.writeLastSessionRecordBlocking(it)
+                        }
+                    },
+                ).window("primary", primary = true)
+            val write = suspend { writeInSessionRecovery("primary", record("r"), { null }, coordinator, manager) }
+
+            repeat(4) { assertFalse(write()) }
+            assertEquals(listOf(LogLevel.WARN) + List(3) { LogLevel.DEBUG }, entries.map { it.level })
+            assertTrue("did not land" in entries.first().message, entries.first().message)
+
+            // Only a write that lands ends the run.
+            assertTrue(write())
+            assertFalse(write())
+            assertEquals(LogLevel.WARN, entries.last().level)
+            assertEquals(2, entries.count { it.level == LogLevel.WARN })
+        }
+
+    @Test
+    fun `a window registered mid-run starts a fresh run, so its first fault warns`() =
+        inSessionLog { entries ->
+            val dir = directory()
+            val manager = session(dir)
+            val coordinator =
+                LastSessionCoordinator(
+                    save = { manager.saveLastSessionBlocking(it) },
+                    saveSet = { manager.saveLastSessionSetBlocking(it) },
+                    saveRecord = { false },
+                ).window("first", primary = true)
+            assertFalse(writeInSessionRecovery("first", record("r"), { null }, coordinator, manager))
+
+            // On macOS the app outlives its windows: the next session's window must not inherit
+            // the last one's run and log its first fault at debug only.
+            coordinator.onWindowDisposed("first")
+            coordinator.window("next", primary = true)
+            assertFalse(writeInSessionRecovery("next", record("r"), { null }, coordinator, manager))
+            assertEquals(listOf(LogLevel.WARN, LogLevel.WARN), entries.map { it.level })
+        }
+
+    /** Runs [block] with every "In-session recovery" log entry, DEBUG included, collected for it. */
+    private fun inSessionLog(block: suspend (List<LogEntry>) -> Unit) =
         runBlocking<Unit> {
             val entries = CopyOnWriteArrayList<LogEntry>()
             val listener = LogListener { if ("In-session recovery" in it.message) entries += it }
@@ -518,31 +603,7 @@ class InSessionRecoveryTest {
             BossLogger.setGlobalLevel(LogLevel.DEBUG)
             BossLogger.addListener(listener)
             try {
-                val dir = directory()
-                val manager = session(dir)
-                val failing = AtomicBoolean(true)
-                val coordinator =
-                    LastSessionCoordinator(
-                        save = { manager.saveLastSessionBlocking(it) },
-                        saveSet = {
-                            check(!failing.get()) { "disk full" }
-                            manager.saveLastSessionSetBlocking(it)
-                        },
-                        saveRecord = { manager.writeLastSessionRecordBlocking(it) },
-                    ).window("primary", primary = true)
-                val write = suspend { writeInSessionRecovery("primary", record("r"), { null }, coordinator, manager) }
-
-                // Three settles against a fault that persists: one warning, then debug.
-                repeat(3) { assertFalse(write()) }
-                assertEquals(listOf(LogLevel.WARN, LogLevel.DEBUG, LogLevel.DEBUG), entries.map { it.level })
-
-                // A write that goes through ends the run, so the next fault warns again.
-                failing.set(false)
-                assertTrue(write())
-                failing.set(true)
-                assertFalse(write())
-                assertEquals(LogLevel.WARN, entries.last().level)
-                assertEquals(2, entries.count { it.level == LogLevel.WARN })
+                block(entries)
             } finally {
                 BossLogger.removeListener(listener)
                 BossLogger.setGlobalLevel(previous)
