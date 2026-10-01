@@ -458,6 +458,26 @@ class McpStoredCommandsTest {
         }
 
     @Test
+    fun `the ledger bounds a stored command itself, without relying on the registry's caps`() {
+        // The registry never sends a command over MAX_STORED_COMMAND_CHARS; any other caller of
+        // record() gets the bound from the ledger, before any regex work.
+        val ledger = McpOperationLedger(ledgerFile = null)
+        val record =
+            ledger.record(
+                toolName = "apply",
+                providerId = "workspace",
+                policyApplied = McpPolicyAction.ASK,
+                approvalDisposition = McpApprovalDisposition.APPROVED_ONCE,
+                durationMs = 1L,
+                isError = false,
+                rawArgs = emptyMap(),
+                storedCommands = listOf("x".repeat(MAX_STORED_COMMAND_CHARS + 1), "x".repeat(MAX_STORED_COMMAND_CHARS)),
+            )
+        val atCap = "x".repeat(MAX_STORED_COMMAND_CHARS)
+        assertEquals(listOf("[OMITTED: command too large]", atCap), record.storedCommands)
+    }
+
+    @Test
     fun `an over-deep call to a stored-command tool is refused before the source, the prompt or a tree parse`() =
         runBlocking {
             val h = Harness { listOf("echo one") }

@@ -2404,9 +2404,11 @@ in the approval dialog, escalates the risk to the worst of them, and asks even w
 provider is ALLOW-ed or session-trusted; durable answers to that prompt are taken as one
 approval, since the prompt was raised for the commands and not the tool. After approval the
 registry hands the same list back to the handler under `approvedStartupCommands`, which it
-strips from every incoming call first, so the handler treats the key as the registry's word and
-nobody else's. That strip, and the key's write and read, take the same depth check before any
-tree parse as every other invoke-path parse (`McpJsonDepth.kt`), since the strip runs ahead of
+strips first from every incoming call to a source's tools, so the handler treats the key as the
+registry's word and nobody else's (a call to any other provider is not stripped: nothing there
+reads the key, and its recorded arguments keep it). That strip, and the key's write and read,
+take the same depth check before any tree parse as every other invoke-path parse
+(`McpJsonDepth.kt`), since the strip runs ahead of
 `invalidArguments`; a Space whose commands changed between the prompt and the open is refused. A
 source that throws refuses the call, and more than `MAX_STORED_COMMANDS_PER_CALL` commands are
 refused before any prompt, as is any command over `MAX_STORED_COMMAND_CHARS`, commands adding up
@@ -2434,8 +2436,11 @@ selectors, and sits in a bordered entry of its own with the number in a separate
 line that soft-wraps (a run of spaces pushing `2. $ curl ...` onto the next line) hangs inside
 its entry instead of reading as the next one. Keep it a category test: a range list goes out of
 date, and U+2028 was exactly such a gap, a mandatory line break that drew one command as two
-numbered entries. The box pins its scrollbar whenever the list runs past it, from two answers
-OR-ed: `storedCommandsOverflow`, arithmetic that is a LOWER bound on the height (at least a line
+numbered entries. `boss mcp ledger tail` prints each recorded command through the same function,
+one line per command, so a newline or escape sequence in one cannot draw a forged line in the
+audit view; the record and `--json` keep the text as recorded. The box pins its scrollbar
+whenever the list runs past it, from two answers OR-ed: `storedCommandsOverflow`, arithmetic
+that is a LOWER bound on the height (at least a line
 per entry, at more characters per line than any monospace font fits), so it is right on the
 first frame whenever it says yes and never pins a bar over a list that fits; and the measured
 `ScrollState.maxValue`, with its `Int.MAX_VALUE` before-layout sentinel excluded. That is not
